@@ -53,6 +53,10 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
                   nb_filters=NB_FILTERS, num_threads=None,
                   label_smoothing=0.1):
 
+    """
+    **************************** Settings & Parameters ****************************
+    """              
+
     # Set TF random seed to improve reproducibility
     tf.set_random_seed(1234)
 
@@ -75,9 +79,9 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
         'learning_rate': learning_rate
     }
     eval_params = {'batch_size': FLAGS.batch_size}
-
     def_model_list = []
 
+    # Set paramters for different dataset
     if FLAGS.dataset == 'mnist':
         X_train, Y_train, X_test, Y_test = data_mnist(train_start=train_start,
                                                       train_end=train_end,
@@ -90,7 +94,6 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
         input_shape = [28, 28, 1]
         
     elif FLAGS.dataset == 'cifar10':
-
         data = CIFAR10(train_start=train_start, train_end=train_end,
                        test_start=test_start, test_end=test_end)
         dataset_size = data.x_train.shape[0]
@@ -106,7 +109,11 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
         y = tf.placeholder(tf.float32, shape=(None, 10))
         input_shape = [32, 32, 3]
 
-    # define and train clean model to be defenced on
+    """
+    **************************** Logic Operations ****************************
+    """
+
+    # Define and train model (aka model_0)
     model = get_model(FLAGS.dataset, FLAGS.attack_model, 'model', nb_classes, nb_filters,
                       input_shape)
     rng = np.random.RandomState([2017, 10, 30])
@@ -114,7 +121,7 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
     train(sess, loss, X_train, Y_train,
           args=train_params, rng=rng, var_list=model.get_params())
 
-    # for the 1...M attack methods, create adv samples and train defence models
+    # For the 1...N attack methods, create adv samples and train defence models model_1...model_n
     for i, attack_name in enumerate(FLAGS.attack_type):
         attack_params = get_para(FLAGS.dataset, attack_name)
         model_i = get_model(FLAGS.dataset, FLAGS.attack_model,
@@ -134,6 +141,8 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
 
         def_model_list.append(model_i)
 
+    # 
+    
     # Make Ensemble model
     def ensemble_model_logits(x):
         return do_logits(x, model, def_model_list=def_model_list)
@@ -151,12 +160,6 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
     do_eval(sess, x, y, do_probs(x, ensemble_model), 
             X_test, Y_test, "ensemble model on clean data", eval_params)
 
-    do_eval(sess, x, y, do_logits(x, model, def_model_list=def_model_list), 
-            X_test, Y_test, "test ensemble logits on clean data", eval_params)
-    do_eval(sess, x, y, do_probs(x, model, def_model_list=def_model_list), 
-            X_test, Y_test, "test ensemble probs on clean data", eval_params)
-    
-
     # Evaluate the accuracy of model on adv examples
     for i, attack_name in enumerate(FLAGS.attack_type):
         attack_params = get_para(FLAGS.dataset, attack_name)
@@ -167,23 +170,33 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
         
         do_eval(sess, x, y, do_probs(origin_adv_x, model), 
                 X_test, Y_test, attack_name + "-> origin model, test on origin model", eval_params)
-        do_eval(sess, x, y, do_probs(origin_adv_x, model, def_model_list=def_model_list), 
-                X_test, Y_test, attack_name + "-> origin model, test on ensemble model, using probs", eval_params)
-        do_eval(sess, x, y, do_logits(origin_adv_x, model, def_model_list=def_model_list), 
-                X_test, Y_test, attack_name + "-> origin model, test on ensemble model, using logits", eval_params)
+        do_eval(sess, x, y, do_probs(origin_adv_x, ensemble_model), 
+                X_test, Y_test, attack_name + "-> origin model, test on ensemble model", eval_params)
         
         # generate attack to ensemble model
         ensemble_attack = get_attack(attack_name, ensemble_model, sess)
         ensemble_adv_x = ensemble_attack.generate(x, **attack_params)
         
+        do_eval(sess, x, y, do_probs(ensemble_adv_x, model), 
+            X_test, Y_test, attack_name + "-> ensemble model, test on origin model", eval_params)
         do_eval(sess, x, y, do_probs(ensemble_adv_x, ensemble_model), 
             X_test, Y_test, attack_name + "-> ensemble model, test on ensemble model", eval_params)
-        do_eval(sess, x, y, do_logits(ensemble_adv_x, model, def_model_list=def_model_list), 
-                X_test, Y_test, attack_name + "-> ensemble model, test on ensemble model, test logits", eval_params)
-        do_eval(sess, x, y, do_probs(ensemble_adv_x, model, def_model_list=def_model_list), 
-                X_test, Y_test, attack_name + "-> ensemble model, test on ensemble model, test probs", eval_params)
-
-
+        
+"""
+**************************** Helper Functions ****************************
+"""
+       
+"""
+Compute the accuracy of a TF model on some data
+  :param sess: TF session to use
+  :param x: input placeholder
+  :param y: output placeholder (for labels)
+  :param pred: model output predictions
+  :param X_test: numpy array with training inputs
+  :param Y_test: numpy array with training outputs
+  :param args: dict or argparse `Namespace` object.
+               Should contain `batch_size`
+"""
 def do_eval(sess, x, y, pred, X_test, Y_test, message, eval_params):
     print(message)
     acc = model_eval(
