@@ -22,12 +22,12 @@ from cleverhans.dataset import CIFAR10
 from cleverhans.model import CallableModelWrapper
 #from utils_fmnist import data_fmnist
 from cleverhans.utils import set_log_level, to_categorical
-from cleverhans.utils_tf import model_eval
 from cleverhans.loss import CrossEntropy
 from models.all_cnn import ModelAllConvolutional
 from models.basic_model import ModelBasicCNN
 from models.cifar10_model import make_wresnet
 from models.mnist_model import MadryMNIST
+from utils import do_eval, do_probs, do_logits, do_transform
 
 FLAGS = flags.FLAGS
 
@@ -79,7 +79,9 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
         'learning_rate': learning_rate
     }
     eval_params = {'batch_size': FLAGS.batch_size}
+    # list of model_1...model_n
     def_model_list = []
+    attack_dict = {}
 
     # Set paramters for different dataset
     if FLAGS.dataset == 'mnist':
@@ -130,10 +132,11 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
             attack_method = get_attack(attack_name, model_i, sess)
         else:
             attack_method = get_attack(attack_name, model, sess)
-        
+
         def attack(x):
             return attack_method.generate(x, **attack_params)
-            
+        attack_dict[attack_name] = attack
+
         loss_i = CrossEntropy(
             model_i, smoothing=label_smoothing, attack=attack, adv_coeff=1.)
         train(sess, loss_i, X_train, Y_train,
@@ -141,8 +144,29 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
 
         def_model_list.append(model_i)
 
-    # 
-    
+
+    # Make and train detector that classfies whcih source (clean or adv_1 or adv_2...) 
+    # the input comes from in the form of probs. The probs will be used as weights in 
+    # ensemble model
+    detector = ModelBasicCNN('detector', (len(FLAGS.attack_type) + 1), nb_filters)
+    loss_d = CrossEntropy(detector, smoothing=label_smoothing)
+    # initial X
+    X_merged = X_train
+    # assign Y using one hot encodeing 
+    Y_merged = np.zeros((X_train.shape[0], (len(FLAGS.attack_type) + 1)))
+    Y_merged[:,0] = np.ones(X_train.shape[0])
+    for i, attack_name in enumerate(FLAGS.attack_type):
+        X_train_adv = do_transform(sess, x, attack_dict[attack_name](x), X_train, args=eval_params)
+        X_merged = np.vstack((X_merged, X_train_adv))
+        Y_train_adv = np.zeros((X_train_adv.shape[0], (len(FLAGS.attack_type) + 1)))
+        Y_train_adv[:,i+1] = np.ones(X_train_adv.shape[0])
+        Y_merged = np.vstack((Y_merged, Y_train_adv))
+        print('X_merged:', X_merged.shape)
+        print('Y_merged:', Y_merged.shape)
+        print(Y_merged[:10])
+        print(Y_merged[-10:])
+    return
+
     # Make Ensemble model
     def ensemble_model_logits(x):
         return do_logits(x, model, def_model_list=def_model_list)
@@ -161,7 +185,7 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
             X_test, Y_test, "ensemble model on clean data", eval_params)
 
     # Evaluate the accuracy of model on adv examples
-    for i, attack_name in enumerate(FLAGS.attack_type):
+    for attack_name in FLAGS.attack_type:
         attack_params = get_para(FLAGS.dataset, attack_name)
 
         # generate attack to origin model
@@ -185,46 +209,6 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
 """
 **************************** Helper Functions ****************************
 """
-       
-"""
-Compute the accuracy of a TF model on some data
-  :param sess: TF session to use
-  :param x: input placeholder
-  :param y: output placeholder (for labels)
-  :param pred: model output predictions
-  :param X_test: numpy array with training inputs
-  :param Y_test: numpy array with training outputs
-  :param args: dict or argparse `Namespace` object.
-               Should contain `batch_size`
-"""
-def do_eval(sess, x, y, pred, X_test, Y_test, message, eval_params):
-    print(message)
-    acc = model_eval(
-        sess, x, y, pred, X_test, Y_test, args=eval_params)
-    print('Accuracy: %0.4f\n' % acc)
-
-"""
-Return the mean prob of multiple models
-"""
-def do_probs(x, model, def_model_list=None):
-    if def_model_list is not None:
-        models = [model] + def_model_list
-    else:
-        models = [model]
-    probs = [m.get_probs(x) for m in models]
-    return tf.reduce_mean(probs, 0)
-
-"""
-Return the mean logits of multiple models
-"""
-def do_logits(x, model, def_model_list=None):
-    if def_model_list is not None:
-        models = [model] + def_model_list
-    else:
-        models = [model]
-    logits = [m.get_logits(x) for m in models]
-    return tf.reduce_mean(logits, 0)
-
 
 def get_model(dataset, attack_model, scope, nb_classes, nb_filters, input_shape):
     print(dataset, attack_model)
@@ -325,7 +309,7 @@ if __name__ == '__main__':
         'label_smooth', 0.1, ("Amount to subtract from correct label "
                               "and distribute among other labels"))
 
-    flags.DEFINE_list('attack_type', ['fgsm', 'pgd'], ("Attack type: 'fgsm'->'fast gradient sign method', "
+    flags.DEFINE_list('attack_type', ['fgsm'], ("Attack type: 'fgsm'->'fast gradient sign method', "
                                                        "'pgd'->'projected gradient descent', "
                                                        "'bim'->'basic iterative method',"
                                                        "'cwl2'->'Carlini & Wagner L2',"
