@@ -67,8 +67,7 @@ def do_transform(sess, x, x_gen, X_in, feed=None, args=None):
         assert nb_batches * args.batch_size >= len(X_in)
         # final output ndarray
         X_out = np.zeros_like(X_in)
-        print('X in shape:', X_in.shape)
-        print('X out shape:', X_out.shape)
+        
         for batch in range(nb_batches):
             start = batch * args.batch_size
             end = min(len(X_in), start + args.batch_size)

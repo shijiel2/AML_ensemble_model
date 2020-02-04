@@ -147,24 +147,18 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
 
     # Make and train detector that classfies whcih source (clean or adv_1 or adv_2...) 
     # the input comes from in the form of probs. The probs will be used as weights in 
-    # ensemble model
+    # ensemble model.
+    
+    # prepare data
+    X_merged, Y_merged = get_merged_train_data(sess, x, attack_dict, X_train, eval_params)
+    # train the detector
     detector = ModelBasicCNN('detector', (len(FLAGS.attack_type) + 1), nb_filters)
     loss_d = CrossEntropy(detector, smoothing=label_smoothing)
-    # initial X
-    X_merged = X_train
-    # assign Y using one hot encodeing 
-    Y_merged = np.zeros((X_train.shape[0], (len(FLAGS.attack_type) + 1)))
-    Y_merged[:,0] = np.ones(X_train.shape[0])
-    for i, attack_name in enumerate(FLAGS.attack_type):
-        X_train_adv = do_transform(sess, x, attack_dict[attack_name](x), X_train, args=eval_params)
-        X_merged = np.vstack((X_merged, X_train_adv))
-        Y_train_adv = np.zeros((X_train_adv.shape[0], (len(FLAGS.attack_type) + 1)))
-        Y_train_adv[:,i+1] = np.ones(X_train_adv.shape[0])
-        Y_merged = np.vstack((Y_merged, Y_train_adv))
-        print('X_merged:', X_merged.shape)
-        print('Y_merged:', Y_merged.shape)
-        print(Y_merged[:10])
-        print(Y_merged[-10:])
+    train(sess, loss_d, X_merged, Y_merged,
+          args=train_params, rng=rng, var_list=detector.get_params())
+    pred = detector.get_probs(attack_dict['fgsm'](x))
+    with sess.as_default():
+        print(pred.eval(feed_dict={x:X_test[:3]}))
     return
 
     # Make Ensemble model
@@ -209,6 +203,32 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
 """
 **************************** Helper Functions ****************************
 """
+def get_merged_train_data(sess, x, attack_dict, X_train, eval_params):
+    """
+    Construct the merged data for trainning the classifier
+    :param sess: current session
+    :param x: placeholder for trainning data
+    :param attack_dict: dictionary {attack_name: attack_generator}
+    :param X_train: ndarray 
+    :return: X_merged, Y_merged 
+    """
+    # initial X
+    X_merged = X_train.copy()
+    # assign Y using one hot encodeing 
+    Y_merged = np.zeros((X_train.shape[0], len(FLAGS.attack_type) + 1))
+    Y_merged[:,0] = np.ones(X_train.shape[0])
+    for i, attack_name in enumerate(FLAGS.attack_type):
+        # generate adversrial X
+        X_train_adv = do_transform(sess, x, attack_dict[attack_name](x), X_train, args=eval_params)
+        # constructe Y
+        Y_train_adv = np.zeros((X_train.shape[0], len(FLAGS.attack_type) + 1))
+        Y_train_adv[:,i+1] = np.ones(X_train.shape[0])
+        # merge them to X_merged and Y_merged
+        X_merged = np.vstack((X_merged, X_train_adv))
+        Y_merged = np.vstack((Y_merged, Y_train_adv))
+    
+    return X_merged, Y_merged
+
 
 def get_model(dataset, attack_model, scope, nb_classes, nb_filters, input_shape):
     print(dataset, attack_model)
