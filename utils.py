@@ -3,6 +3,8 @@ from cleverhans.utils_tf import model_eval
 from cleverhans.utils import batch_indices, _ArgsWrapper, create_logger
 import numpy as np
 import math
+from tqdm import tqdm
+
 
 def do_eval(sess, x, y, pred, X_test, Y_test, message, eval_params):
     """
@@ -22,7 +24,7 @@ def do_eval(sess, x, y, pred, X_test, Y_test, message, eval_params):
     print('Accuracy: %0.4f\n' % acc)
 
 
-def do_probs(x, model, def_model_list=None):
+def do_preds(x, model, method, def_model_list=None, detector=None):
     """
     Return the mean prob of multiple models
     """
@@ -30,20 +32,20 @@ def do_probs(x, model, def_model_list=None):
         models = [model] + def_model_list
     else:
         models = [model]
-    probs = [m.get_probs(x) for m in models]
-    return tf.reduce_mean(probs, 0)
-
-
-def do_logits(x, model, def_model_list=None):
-    """
-    Return the mean logits of multiple models
-    """
-    if def_model_list is not None:
-        models = [model] + def_model_list
+    if detector is None:
+        preds = tf.stack([get_pred(x, m, method) for m in models], 1)
+        return tf.reduce_mean(preds, 1)
     else:
-        models = [model]
-    logits = [m.get_logits(x) for m in models]
-    return tf.reduce_mean(logits, 0)
+        preds = tf.stack([get_pred(x, m, method) for m in models], 1)
+        preds = tf.math.multiply(preds, detector.get_probs(x)[:, :, None])
+        return tf.reduce_sum(preds, 1)
+
+
+def get_pred(x, model, method):
+    if method == 'probs':
+        return model.get_probs(x)
+    elif method == 'logits':
+        return model.get_logits(x)
 
 
 def do_transform(sess, x, x_gen, X_in, feed=None, args=None):
@@ -67,8 +69,8 @@ def do_transform(sess, x, x_gen, X_in, feed=None, args=None):
         assert nb_batches * args.batch_size >= len(X_in)
         # final output ndarray
         X_out = np.zeros_like(X_in)
-        
-        for batch in range(nb_batches):
+
+        for batch in tqdm(range(nb_batches)):
             start = batch * args.batch_size
             end = min(len(X_in), start + args.batch_size)
             feed_dict = {x: X_in[start:end]}
@@ -80,4 +82,3 @@ def do_transform(sess, x, x_gen, X_in, feed=None, args=None):
 
     return X_out
 
-            

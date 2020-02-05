@@ -27,7 +27,8 @@ from models.all_cnn import ModelAllConvolutional
 from models.basic_model import ModelBasicCNN
 from models.cifar10_model import make_wresnet
 from models.mnist_model import MadryMNIST
-from utils import do_eval, do_probs, do_logits, do_transform
+from sklearn.model_selection import train_test_split
+from utils import do_eval, do_preds, do_transform
 
 FLAGS = flags.FLAGS
 
@@ -40,8 +41,8 @@ BACKPROP_THROUGH_ATTACK = False
 NB_FILTERS = 64
 TRAIN_SIZE = 60000
 TEST_SIZE = 10000
-ENSEMBLE_TYPE = 'probs'
-IS_ONLINE = True
+EVAL_DETECTOR = False
+IS_ONLINE = False
 
 
 def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
@@ -52,10 +53,9 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
                   backprop_through_attack=BACKPROP_THROUGH_ATTACK,
                   nb_filters=NB_FILTERS, num_threads=None,
                   label_smoothing=0.1):
-
     """
     **************************** Settings & Parameters ****************************
-    """              
+    """
 
     # Set TF random seed to improve reproducibility
     tf.set_random_seed(1234)
@@ -94,7 +94,7 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
         x = tf.placeholder(tf.float32, shape=[None, 28, 28, 1])
         y = tf.placeholder(tf.float32, shape=[None, 10])
         input_shape = [28, 28, 1]
-        
+
     elif FLAGS.dataset == 'cifar10':
         data = CIFAR10(train_start=train_start, train_end=train_end,
                        test_start=test_start, test_end=test_end)
@@ -120,12 +120,17 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
                       input_shape)
     rng = np.random.RandomState([2017, 10, 30])
     loss = CrossEntropy(model, smoothing=label_smoothing)
+    print('Train clean model_0')
     train(sess, loss, X_train, Y_train,
           args=train_params, rng=rng, var_list=model.get_params())
 
     # For the 1...N attack methods, create adv samples and train defence models model_1...model_n
     for i, attack_name in enumerate(FLAGS.attack_type):
         attack_params = get_para(FLAGS.dataset, attack_name)
+        # special case for PGD trainning
+        if attack_name == 'pgd':
+            attack_params.update({'nb_iter': 10})
+
         model_i = get_model(FLAGS.dataset, FLAGS.attack_model,
                             'model_'+str(i), nb_classes, nb_filters, input_shape)
         if IS_ONLINE:
@@ -139,70 +144,96 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
 
         loss_i = CrossEntropy(
             model_i, smoothing=label_smoothing, attack=attack, adv_coeff=1.)
+        print('Train defence model_i for attack:', attack_name)
         train(sess, loss_i, X_train, Y_train,
               args=train_params, rng=rng, var_list=model_i.get_params())
 
         def_model_list.append(model_i)
 
+    # Make and train detector that classfies whcih source (clean or adv_1 or adv_2...)
+    # Accuracy of detector: 65%
 
-    # Make and train detector that classfies whcih source (clean or adv_1 or adv_2...) 
-    # the input comes from in the form of probs. The probs will be used as weights in 
-    # ensemble model.
-    
     # prepare data
-    X_merged, Y_merged = get_merged_train_data(sess, x, attack_dict, X_train, eval_params)
+    X_merged, Y_merged = get_merged_train_data(
+        sess, x, attack_dict, X_train, eval_params)
     # train the detector
-    detector = ModelBasicCNN('detector', (len(FLAGS.attack_type) + 1), nb_filters)
+    detector = ModelBasicCNN(
+        'detector', (len(FLAGS.attack_type) + 1), nb_filters)
     loss_d = CrossEntropy(detector, smoothing=label_smoothing)
+    print('Train detector with X_merged and Y_merged shape:',
+          X_merged.shape, Y_merged.shape)
     train(sess, loss_d, X_merged, Y_merged,
           args=train_params, rng=rng, var_list=detector.get_params())
-    pred = detector.get_probs(attack_dict['fgsm'](x))
-    with sess.as_default():
-        print(pred.eval(feed_dict={x:X_test[:3]}))
-    return
+
+    # eval detector
+    if EVAL_DETECTOR:
+        X_merged_train, X_merged_test, Y_merged_train, Y_merged_test = train_test_split(
+            X_merged, Y_merged, test_size=0.20, random_state=42)
+        train(sess, loss_d, X_merged_train, Y_merged_train,
+              args=train_params, rng=rng, var_list=detector.get_params())
+        do_eval(sess, x, tf.placeholder(tf.float32, shape=(None, (len(FLAGS.attack_type) + 1))),
+                do_preds(x, detector, 'probs'), X_merged_test, Y_merged_test, 'Detector accuracy', eval_params)
 
     # Make Ensemble model
     def ensemble_model_logits(x):
-        return do_logits(x, model, def_model_list=def_model_list)
-    def ensemble_model_probs(x):
-        return tf.math.log(do_probs(x, model, def_model_list=def_model_list))
+        return do_preds(x, model, 'logits', def_model_list=def_model_list, detector=detector)
 
-    if ENSEMBLE_TYPE == 'logits':
-        ensemble_model = CallableModelWrapper(ensemble_model_logits, 'logits')
-    elif ENSEMBLE_TYPE == 'probs':
-        ensemble_model = CallableModelWrapper(ensemble_model_probs, 'logits')
+    def ensemble_model_probs(x):
+        return tf.math.log(do_preds(x, model, 'probs', def_model_list=def_model_list, detector=detector))
+
+    ensemble_model_L = CallableModelWrapper(ensemble_model_logits, 'logits')
+    ensemble_model_P = CallableModelWrapper(ensemble_model_probs, 'logits')
 
     # Evaluate the accuracy of model on clean examples
-    do_eval(sess, x, y, do_probs(x, model), 
+    print('=============== Results on clean data ===============')
+    do_eval(sess, x, y, do_preds(x, model, 'probs'),
             X_test, Y_test, "origin model on clean data", eval_params)
-    do_eval(sess, x, y, do_probs(x, ensemble_model), 
-            X_test, Y_test, "ensemble model on clean data", eval_params)
+    do_eval(sess, x, y, do_preds(x, ensemble_model_P, 'probs'),
+            X_test, Y_test, "probs ensemble model on clean data", eval_params)
+    do_eval(sess, x, y, do_preds(x, ensemble_model_L, 'probs'),
+            X_test, Y_test, "logits ensemble model on clean data", eval_params)
 
     # Evaluate the accuracy of model on adv examples
     for attack_name in FLAGS.attack_type:
+        print('=============== Results on attack',
+              attack_name, '===============')
         attack_params = get_para(FLAGS.dataset, attack_name)
 
         # generate attack to origin model
         origin_attack = get_attack(attack_name, model, sess)
         origin_adv_x = origin_attack.generate(x, **attack_params)
-        
-        do_eval(sess, x, y, do_probs(origin_adv_x, model), 
+
+        do_eval(sess, x, y, do_preds(origin_adv_x, model, 'probs'),
                 X_test, Y_test, attack_name + "-> origin model, test on origin model", eval_params)
-        do_eval(sess, x, y, do_probs(origin_adv_x, ensemble_model), 
-                X_test, Y_test, attack_name + "-> origin model, test on ensemble model", eval_params)
-        
+        do_eval(sess, x, y, do_preds(origin_adv_x, ensemble_model_P, 'probs'),
+                X_test, Y_test, attack_name + "-> origin model, test on probs ensemble model", eval_params)
+        do_eval(sess, x, y, do_preds(origin_adv_x, ensemble_model_L, 'probs'),
+                X_test, Y_test, attack_name + "-> origin model, test on logits ensemble model", eval_params)
+
         # generate attack to ensemble model
-        ensemble_attack = get_attack(attack_name, ensemble_model, sess)
-        ensemble_adv_x = ensemble_attack.generate(x, **attack_params)
-        
-        do_eval(sess, x, y, do_probs(ensemble_adv_x, model), 
-            X_test, Y_test, attack_name + "-> ensemble model, test on origin model", eval_params)
-        do_eval(sess, x, y, do_probs(ensemble_adv_x, ensemble_model), 
-            X_test, Y_test, attack_name + "-> ensemble model, test on ensemble model", eval_params)
-        
+        # probs
+        ensemble_attack_P = get_attack(attack_name, ensemble_model_P, sess)
+        ensemble_adv_x_P = ensemble_attack_P.generate(x, **attack_params)
+
+        do_eval(sess, x, y, do_preds(ensemble_adv_x_P, model, 'probs'),
+                X_test, Y_test, attack_name + "-> probs ensemble model, test on origin model", eval_params)
+        do_eval(sess, x, y, do_preds(ensemble_adv_x_P, ensemble_model_P, 'probs'),
+                X_test, Y_test, attack_name + "-> probs ensemble model, test on ensemble model", eval_params)
+        # logtis
+        ensemble_attack_L = get_attack(attack_name, ensemble_model_L, sess)
+        ensemble_adv_x_L = ensemble_attack_L.generate(x, **attack_params)
+
+        do_eval(sess, x, y, do_preds(ensemble_adv_x_L, model, 'probs'),
+                X_test, Y_test, attack_name + "-> logits ensemble model, test on origin model", eval_params)
+        do_eval(sess, x, y, do_preds(ensemble_adv_x_L, ensemble_model_L, 'probs'),
+                X_test, Y_test, attack_name + "-> logtis ensemble model, test on ensemble model", eval_params)
+
+
 """
 **************************** Helper Functions ****************************
 """
+
+
 def get_merged_train_data(sess, x, attack_dict, X_train, eval_params):
     """
     Construct the merged data for trainning the classifier
@@ -214,19 +245,20 @@ def get_merged_train_data(sess, x, attack_dict, X_train, eval_params):
     """
     # initial X
     X_merged = X_train.copy()
-    # assign Y using one hot encodeing 
+    # assign Y using one hot encodeing
     Y_merged = np.zeros((X_train.shape[0], len(FLAGS.attack_type) + 1))
-    Y_merged[:,0] = np.ones(X_train.shape[0])
+    Y_merged[:, 0] = np.ones(X_train.shape[0])
     for i, attack_name in enumerate(FLAGS.attack_type):
         # generate adversrial X
-        X_train_adv = do_transform(sess, x, attack_dict[attack_name](x), X_train, args=eval_params)
+        X_train_adv = do_transform(
+            sess, x, attack_dict[attack_name](x), X_train, args=eval_params)
         # constructe Y
         Y_train_adv = np.zeros((X_train.shape[0], len(FLAGS.attack_type) + 1))
-        Y_train_adv[:,i+1] = np.ones(X_train.shape[0])
+        Y_train_adv[:, i+1] = np.ones(X_train.shape[0])
         # merge them to X_merged and Y_merged
         X_merged = np.vstack((X_merged, X_train_adv))
         Y_merged = np.vstack((Y_merged, Y_train_adv))
-    
+
     return X_merged, Y_merged
 
 
@@ -329,7 +361,7 @@ if __name__ == '__main__':
         'label_smooth', 0.1, ("Amount to subtract from correct label "
                               "and distribute among other labels"))
 
-    flags.DEFINE_list('attack_type', ['fgsm'], ("Attack type: 'fgsm'->'fast gradient sign method', "
+    flags.DEFINE_list('attack_type', ['fgsm', 'pgd'], ("Attack type: 'fgsm'->'fast gradient sign method', "
                                                        "'pgd'->'projected gradient descent', "
                                                        "'bim'->'basic iterative method',"
                                                        "'cwl2'->'Carlini & Wagner L2',"
@@ -338,7 +370,7 @@ if __name__ == '__main__':
                         ("dataset: 'mnist'->'mnist dataset', "
                          "'fmnist'->'fashion mnist dataset', "
                          "'cifar10'->'cifar-10 dataset'"))
-    flags.DEFINE_string('attack_model', 'mnist_model',
+    flags.DEFINE_string('attack_model', 'basic_model',
                         ("defence_model: 'basic_model'->'a cnn model for mnist', "
                          "'all_cnn'->'a cnn model for cifar10', "
                          "'cifar10_model'->'model for cifar10', "
