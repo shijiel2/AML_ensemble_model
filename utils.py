@@ -139,14 +139,14 @@ def get_pred(x, model, method):
         return model.get_logits(x)
 
 
-def do_transform(sess, x, x_gen, X_in, feed=None, args=None):
+def do_sess_batched_eval(sess, x, x_gen, X_in, X_out_shape, args=None):
     """
     Apply gen to ndarray, and return a new ndarray.
     :param sess: TF session to use
     :param x_gen: generator feed with placeholder, eg. attack(x)
     :param X_in: numpy array with inputs
     :param args: dict or argparse `Namespace` object.
-               Should contain `batch_size`
+                 Should contain `batch_size`
     :return: ndarry with same shape 
     """
     args = _ArgsWrapper(args or {})
@@ -159,14 +159,12 @@ def do_transform(sess, x, x_gen, X_in, feed=None, args=None):
         nb_batches = int(math.ceil(float(len(X_in)) / args.batch_size))
         assert nb_batches * args.batch_size >= len(X_in)
         # final output ndarray
-        X_out = np.zeros_like(X_in)
+        X_out = np.zeros(X_out_shape, dtype=X_in.dtype)
 
         for batch in tqdm(range(nb_batches)):
             start = batch * args.batch_size
             end = min(len(X_in), start + args.batch_size)
             feed_dict = {x: X_in[start:end]}
-            if feed is not None:
-                feed_dict.update(feed)
             X_out[start:end] = x_gen.eval(feed_dict=feed_dict)
 
         assert end >= len(X_in)
@@ -190,8 +188,8 @@ def get_merged_train_data(sess, x, attack_dict, X_train, eval_params, attack_typ
     Y_merged[:, 0] = np.ones(X_train.shape[0])
     for i, attack_name in enumerate(attack_types):
         # generate adversrial X
-        X_train_adv = do_transform(
-            sess, x, attack_dict[attack_name](x), X_train, args=eval_params)
+        X_train_adv = do_sess_batched_eval(
+            sess, x, attack_dict[attack_name](x), X_train, X_train.shape, args=eval_params)
         # constructe Y
         Y_train_adv = np.zeros((X_train.shape[0], len(attack_types) + 1))
         Y_train_adv[:, i+1] = np.ones(X_train.shape[0])

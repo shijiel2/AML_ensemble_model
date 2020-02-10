@@ -12,6 +12,7 @@ import sys
 import numpy as np
 import logging
 import tensorflow as tf
+import math
 from tensorflow.python.platform import app
 from tensorflow.python.platform import flags
 from cleverhans.train import train
@@ -24,7 +25,7 @@ from models.basic_model import ModelBasicCNN
 from cleverhans.utils import set_log_level, to_categorical
 from cleverhans.loss import CrossEntropy
 from sklearn.model_selection import train_test_split
-from utils import do_eval, do_preds, do_transform, get_merged_train_data, get_attack, get_para, get_model
+from utils import do_eval, do_preds, do_sess_batched_eval, get_merged_train_data, get_attack, get_para, get_model
 
 FLAGS = flags.FLAGS
 
@@ -38,7 +39,7 @@ NB_FILTERS = 64
 TRAIN_SIZE = 60000
 TEST_SIZE = 10000
 EVAL_DETECTOR = False
-IS_ONLINE = False
+IS_ONLINE = True
 
 
 def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
@@ -221,6 +222,11 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
             for to_model in to_model_lst:
                 do_eval(sess, x, y, do_preds(adv_x, to_model, 'probs'), X_test, Y_test, attack_name +
                         " ==attack on=> " + model_name_dict[from_model] + " ==test on=> " + model_name_dict[to_model], eval_params)
+
+            att_probs = detector.get_probs(adv_x)
+            Attack_probs = do_sess_batched_eval(sess, x, att_probs, X_test, (X_test.shape[0], len(FLAGS.attack_type)+1), args=eval_params)
+            print('detector mean probs:', np.mean(Attack_probs, axis=0))
+
 
         # generate attack to origin model
         attack_from_to(model, [model, ensemble_model_L, ensemble_model_P])
