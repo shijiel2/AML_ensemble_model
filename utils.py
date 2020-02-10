@@ -4,6 +4,97 @@ from cleverhans.utils import batch_indices, _ArgsWrapper, create_logger
 import numpy as np
 import math
 from tqdm import tqdm
+from models.all_cnn import ModelAllConvolutional
+from models.basic_model import ModelBasicCNN
+from models.cifar10_model import make_wresnet
+from models.mnist_model import MadryMNIST
+from cleverhans.attacks import *
+
+"""
+**************************** Helper Functions ****************************
+"""
+
+def get_model(dataset, attack_model, scope, nb_classes, nb_filters, input_shape):
+    print(dataset, attack_model)
+    if dataset == 'mnist':
+        if attack_model == 'basic_model':
+            model = ModelBasicCNN(scope, nb_classes, nb_filters)
+        elif attack_model == 'mnist_model':
+            model = MadryMNIST()
+    elif dataset == 'cifar10':
+        if attack_model == 'all_cnn':
+            model = ModelAllConvolutional(
+                scope, nb_classes, nb_filters, input_shape=input_shape)
+        elif attack_model == 'cifar10_model':
+            model = make_wresnet(scope=scope)
+    else:
+        raise ValueError(dataset)
+    return model
+
+
+def get_attack(attack_type, model, sess):
+    if attack_type == 'fgsm':
+        attack = FastGradientMethod(model)
+    elif attack_type == 'bim':
+        attack = BasicIterativeMethod(model)
+    elif attack_type == 'pgd':
+        attack = ProjectedGradientDescent(model)
+    elif attack_type == 'cwl2':
+        attack = CarliniWagnerL2(model, sess)
+    elif attack_type == 'jsma':
+        attack = SaliencyMapMethod(model)
+    else:
+        raise ValueError(attack_type)
+    return attack
+
+
+def get_para(dataset, attack_type):
+    if dataset == 'mnist' or 'fmnist':
+        print('attack_type', attack_type)
+        attack_params = {'eps': 0.3, 'clip_min': 0., 'clip_max': 1.}
+        if attack_type == 'fgsm':
+            attack_params = attack_params
+        elif attack_type == 'bim':
+            attack_params.update({'nb_iter': 50, 'eps_iter': .01})
+        elif attack_type == 'pgd':
+            attack_params.update({'eps_iter': 0.05, 'nb_iter': 20})
+        elif attack_type == 'cwl2':
+            attack_params = {'binary_search_steps': 1,
+                             'max_iterations': 100,
+                             'learning_rate': 0.2,
+                             'batch_size': 8,
+                             'initial_const': 10}
+        elif attack_type == 'jsma':
+            attack_params.update({'theta': 1., 'gamma': 0.1,
+                                  'clip_min': 0., 'clip_max': 1.,
+                                  'y_target': None})
+        else:
+            raise ValueError(attack_type)
+
+    elif dataset == 'cifar10':
+        attack_params = {'clip_min': 0., 'clip_max': 255.}
+        if attack_type == 'cwl2':
+            attack_params.update({'binary_search_steps': 1,
+                                  'max_iterations': 100,
+                                  'learning_rate': 0.2,
+                                  'batch_size': 8,
+                                  'initial_const': 10})
+        else:
+            attack_params.update({'eps': 8, 'ord': np.inf})
+            if attack_type == 'fgsm':
+                attack_params = attack_params
+            elif attack_type == 'bim':
+                attack_params.update({'nb_iter': 50, 'eps_iter': .01})
+            elif attack_type == 'pgd':
+                attack_params.update({'eps_iter': 2, 'nb_iter': 20})
+            elif attack_type == 'jsma':
+                attack_params.update({'theta': 1., 'gamma': 0.1,
+                                      'clip_min': 0., 'clip_max': 1.,
+                                      'y_target': None})
+            else:
+                raise ValueError(attack_type)
+    return attack_params
+
 
 
 def do_eval(sess, x, y, pred, X_test, Y_test, message, eval_params):
@@ -82,3 +173,30 @@ def do_transform(sess, x, x_gen, X_in, feed=None, args=None):
 
     return X_out
 
+
+def get_merged_train_data(sess, x, attack_dict, X_train, eval_params, attack_types):
+    """
+    Construct the merged data for trainning the classifier
+    :param sess: current session
+    :param x: placeholder for trainning data
+    :param attack_dict: dictionary {attack_name: attack_generator}
+    :param X_train: ndarray 
+    :return: X_merged, Y_merged 
+    """
+    # initial X
+    X_merged = X_train.copy()
+    # assign Y using one hot encodeing
+    Y_merged = np.zeros((X_train.shape[0], len(attack_types) + 1))
+    Y_merged[:, 0] = np.ones(X_train.shape[0])
+    for i, attack_name in enumerate(attack_types):
+        # generate adversrial X
+        X_train_adv = do_transform(
+            sess, x, attack_dict[attack_name](x), X_train, args=eval_params)
+        # constructe Y
+        Y_train_adv = np.zeros((X_train.shape[0], len(attack_types) + 1))
+        Y_train_adv[:, i+1] = np.ones(X_train.shape[0])
+        # merge them to X_merged and Y_merged
+        X_merged = np.vstack((X_merged, X_train_adv))
+        Y_merged = np.vstack((Y_merged, Y_train_adv))
+
+    return X_merged, Y_merged

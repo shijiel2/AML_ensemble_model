@@ -11,24 +11,20 @@ import time
 import sys
 import numpy as np
 import logging
-
 import tensorflow as tf
 from tensorflow.python.platform import app
 from tensorflow.python.platform import flags
-from cleverhans.attacks import *
 from cleverhans.train import train
 from cleverhans.utils_mnist import data_mnist
 from cleverhans.dataset import CIFAR10
 from cleverhans.model import CallableModelWrapper
+from models.all_cnn import ModelAllConvolutional
+from models.basic_model import ModelBasicCNN
 #from utils_fmnist import data_fmnist
 from cleverhans.utils import set_log_level, to_categorical
 from cleverhans.loss import CrossEntropy
-from models.all_cnn import ModelAllConvolutional
-from models.basic_model import ModelBasicCNN
-from models.cifar10_model import make_wresnet
-from models.mnist_model import MadryMNIST
 from sklearn.model_selection import train_test_split
-from utils import do_eval, do_preds, do_transform
+from utils import do_eval, do_preds, do_transform, get_merged_train_data, get_attack, get_para, get_model
 
 FLAGS = flags.FLAGS
 
@@ -155,10 +151,15 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
 
     # prepare data
     X_merged, Y_merged = get_merged_train_data(
-        sess, x, attack_dict, X_train, eval_params)
+        sess, x, attack_dict, X_train, eval_params, FLAGS.attack_type)
     # train the detector
-    detector = ModelBasicCNN(
-        'detector', (len(FLAGS.attack_type) + 1), nb_filters)
+    if FLAGS.dataset == 'mnist':
+        detector = ModelBasicCNN(
+            'detector', (len(FLAGS.attack_type) + 1), nb_filters)
+    elif FLAGS.dataset == 'cifar10':
+        detector = ModelAllConvolutional(
+            'detector', (len(FLAGS.attack_type) + 1), nb_filters, input_shape=input_shape)
+
     loss_d = CrossEntropy(detector, smoothing=label_smoothing)
     print('Train detector with X_merged and Y_merged shape:',
           X_merged.shape, Y_merged.shape)
@@ -178,11 +179,19 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
     def ensemble_model_logits(x):
         return do_preds(x, model, 'logits', def_model_list=def_model_list, detector=detector)
 
+    def ensemble_model_logits_unweighted(x):
+        return do_preds(x, model, 'logits', def_model_list=def_model_list)
+
     def ensemble_model_probs(x):
         return tf.math.log(do_preds(x, model, 'probs', def_model_list=def_model_list, detector=detector))
 
+    def ensemble_model_probs_unweighted(x):
+        return tf.math.log(do_preds(x, model, 'probs', def_model_list=def_model_list))
+
     ensemble_model_L = CallableModelWrapper(ensemble_model_logits, 'logits')
+    ensemble_model_L_U = CallableModelWrapper(ensemble_model_logits_unweighted, 'logits')
     ensemble_model_P = CallableModelWrapper(ensemble_model_probs, 'logits')
+    ensemble_model_P_U = CallableModelWrapper(ensemble_model_probs_unweighted, 'logits')
 
     # Evaluate the accuracy of model on clean examples
     print('=============== Results on clean data ===============')
@@ -195,153 +204,41 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
 
     # Evaluate the accuracy of model on adv examples
     for attack_name in FLAGS.attack_type:
-        print('=============== Results on attack',
-              attack_name, '===============')
+        print('=============== Results on attack ' + attack_name + ' ===============')
         attack_params = get_para(FLAGS.dataset, attack_name)
 
+        model_name_dict = {
+            model: 'model_0',
+            ensemble_model_L: 'weighted logits ensemble model',
+            ensemble_model_P: 'weighted probs ensemble model',
+            ensemble_model_L_U: 'unweighted logits ensemble model',
+            ensemble_model_P_U: 'unweighted probs ensemble model'
+        }
+
+        def attack_from_to(from_model, to_model_lst):
+            from_attack = get_attack(attack_name, from_model, sess)
+            adv_x = from_attack.generate(x, **attack_params)
+            for to_model in to_model_lst:
+                do_eval(sess, x, y, do_preds(adv_x, to_model, 'probs'), X_test, Y_test, attack_name +
+                        " ==attack on=> " + model_name_dict[from_model] + " ==test on=> " + model_name_dict[to_model], eval_params)
+
         # generate attack to origin model
-        origin_attack = get_attack(attack_name, model, sess)
-        origin_adv_x = origin_attack.generate(x, **attack_params)
+        attack_from_to(model, [model, ensemble_model_L, ensemble_model_P])
 
-        do_eval(sess, x, y, do_preds(origin_adv_x, model, 'probs'),
-                X_test, Y_test, attack_name + "-> origin model, test on origin model", eval_params)
-        do_eval(sess, x, y, do_preds(origin_adv_x, ensemble_model_P, 'probs'),
-                X_test, Y_test, attack_name + "-> origin model, test on probs ensemble model", eval_params)
-        do_eval(sess, x, y, do_preds(origin_adv_x, ensemble_model_L, 'probs'),
-                X_test, Y_test, attack_name + "-> origin model, test on logits ensemble model", eval_params)
-
-        # generate attack to ensemble model
+        # generate attack to weighted ensemble model
+        # logits
+        attack_from_to(ensemble_model_L, [model, ensemble_model_L])
         # probs
-        ensemble_attack_P = get_attack(attack_name, ensemble_model_P, sess)
-        ensemble_adv_x_P = ensemble_attack_P.generate(x, **attack_params)
+        attack_from_to(ensemble_model_P, [model, ensemble_model_P])
 
-        do_eval(sess, x, y, do_preds(ensemble_adv_x_P, model, 'probs'),
-                X_test, Y_test, attack_name + "-> probs ensemble model, test on origin model", eval_params)
-        do_eval(sess, x, y, do_preds(ensemble_adv_x_P, ensemble_model_P, 'probs'),
-                X_test, Y_test, attack_name + "-> probs ensemble model, test on ensemble model", eval_params)
-        # logtis
-        ensemble_attack_L = get_attack(attack_name, ensemble_model_L, sess)
-        ensemble_adv_x_L = ensemble_attack_L.generate(x, **attack_params)
+        # generate attack to unweighted ensemble model
+        # logits
+        attack_from_to(ensemble_model_L_U, [model, ensemble_model_L])
+        # probs
+        attack_from_to(ensemble_model_P_U, [model, ensemble_model_P])
 
-        do_eval(sess, x, y, do_preds(ensemble_adv_x_L, model, 'probs'),
-                X_test, Y_test, attack_name + "-> logits ensemble model, test on origin model", eval_params)
-        do_eval(sess, x, y, do_preds(ensemble_adv_x_L, ensemble_model_L, 'probs'),
-                X_test, Y_test, attack_name + "-> logtis ensemble model, test on ensemble model", eval_params)
+        
 
-
-"""
-**************************** Helper Functions ****************************
-"""
-
-
-def get_merged_train_data(sess, x, attack_dict, X_train, eval_params):
-    """
-    Construct the merged data for trainning the classifier
-    :param sess: current session
-    :param x: placeholder for trainning data
-    :param attack_dict: dictionary {attack_name: attack_generator}
-    :param X_train: ndarray 
-    :return: X_merged, Y_merged 
-    """
-    # initial X
-    X_merged = X_train.copy()
-    # assign Y using one hot encodeing
-    Y_merged = np.zeros((X_train.shape[0], len(FLAGS.attack_type) + 1))
-    Y_merged[:, 0] = np.ones(X_train.shape[0])
-    for i, attack_name in enumerate(FLAGS.attack_type):
-        # generate adversrial X
-        X_train_adv = do_transform(
-            sess, x, attack_dict[attack_name](x), X_train, args=eval_params)
-        # constructe Y
-        Y_train_adv = np.zeros((X_train.shape[0], len(FLAGS.attack_type) + 1))
-        Y_train_adv[:, i+1] = np.ones(X_train.shape[0])
-        # merge them to X_merged and Y_merged
-        X_merged = np.vstack((X_merged, X_train_adv))
-        Y_merged = np.vstack((Y_merged, Y_train_adv))
-
-    return X_merged, Y_merged
-
-
-def get_model(dataset, attack_model, scope, nb_classes, nb_filters, input_shape):
-    print(dataset, attack_model)
-    if dataset == 'mnist':
-        if attack_model == 'basic_model':
-            model = ModelBasicCNN(scope, nb_classes, nb_filters)
-        elif attack_model == 'mnist_model':
-            model = MadryMNIST()
-    elif dataset == 'cifar10':
-        if attack_model == 'all_cnn':
-            model = ModelAllConvolutional(
-                scope, nb_classes, nb_filters, input_shape=input_shape)
-        elif attack_model == 'cifar10_model':
-            model = make_wresnet(scope=scope)
-    else:
-        raise ValueError(dataset)
-    return model
-
-
-def get_attack(attack_type, model, sess):
-    if attack_type == 'fgsm':
-        attack = FastGradientMethod(model)
-    elif attack_type == 'bim':
-        attack = BasicIterativeMethod(model)
-    elif attack_type == 'pgd':
-        attack = ProjectedGradientDescent(model)
-    elif attack_type == 'cwl2':
-        attack = CarliniWagnerL2(model, sess)
-    elif attack_type == 'jsma':
-        attack = SaliencyMapMethod(model)
-    else:
-        raise ValueError(attack_type)
-    return attack
-
-
-def get_para(dataset, attack_type):
-    if dataset == 'mnist' or 'fmnist':
-        print('attack_type', attack_type)
-        attack_params = {'eps': 0.3, 'clip_min': 0., 'clip_max': 1.}
-        if attack_type == 'fgsm':
-            attack_params = attack_params
-        elif attack_type == 'bim':
-            attack_params.update({'nb_iter': 50, 'eps_iter': .01})
-        elif attack_type == 'pgd':
-            attack_params.update({'eps_iter': 0.05, 'nb_iter': 20})
-        elif attack_type == 'cwl2':
-            attack_params = {'binary_search_steps': 1,
-                             'max_iterations': 100,
-                             'learning_rate': 0.2,
-                             'batch_size': 8,
-                             'initial_const': 10}
-        elif attack_type == 'jsma':
-            attack_params.update({'theta': 1., 'gamma': 0.1,
-                                  'clip_min': 0., 'clip_max': 1.,
-                                  'y_target': None})
-        else:
-            raise ValueError(attack_type)
-
-    elif dataset == 'cifar10':
-        attack_params = {'clip_min': 0., 'clip_max': 255.}
-        if attack_type == 'cwl2':
-            attack_params.update({'binary_search_steps': 1,
-                                  'max_iterations': 100,
-                                  'learning_rate': 0.2,
-                                  'batch_size': 8,
-                                  'initial_const': 10})
-        else:
-            attack_params.update({'eps': 8, 'ord': np.inf})
-            if attack_type == 'fgsm':
-                attack_params = attack_params
-            elif attack_type == 'bim':
-                attack_params.update({'nb_iter': 50, 'eps_iter': .01})
-            elif attack_type == 'pgd':
-                attack_params.update({'eps_iter': 2, 'nb_iter': 20})
-            elif attack_type == 'jsma':
-                attack_params.update({'theta': 1., 'gamma': 0.1,
-                                      'clip_min': 0., 'clip_max': 1.,
-                                      'y_target': None})
-            else:
-                raise ValueError(attack_type)
-    return attack_params
 
 
 def main(argv):
