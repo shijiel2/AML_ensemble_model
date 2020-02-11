@@ -9,13 +9,13 @@ from models.basic_model import ModelBasicCNN
 from models.cifar10_model import make_wresnet
 from models.mnist_model import MadryMNIST
 from cleverhans.attacks import *
+import datetime
 
 """
 **************************** Helper Functions ****************************
 """
 
 def get_model(dataset, attack_model, scope, nb_classes, nb_filters, input_shape):
-    print(dataset, attack_model)
     if dataset == 'mnist':
         if attack_model == 'basic_model':
             model = ModelBasicCNN(scope, nb_classes, nb_filters)
@@ -50,7 +50,6 @@ def get_attack(attack_type, model, sess):
 
 def get_para(dataset, attack_type):
     if dataset == 'mnist' or 'fmnist':
-        print('attack_type', attack_type)
         attack_params = {'eps': 0.3, 'clip_min': 0., 'clip_max': 1.}
         if attack_type == 'fgsm':
             attack_params = attack_params
@@ -97,7 +96,7 @@ def get_para(dataset, attack_type):
 
 
 
-def do_eval(sess, x, y, pred, X_test, Y_test, message, eval_params):
+def do_eval(sess, x, y, pred, X_test, Y_test, message, eval_params, fp=None):
     """
     Compute the accuracy of a TF model on some data
     :param sess: TF session to use
@@ -109,10 +108,12 @@ def do_eval(sess, x, y, pred, X_test, Y_test, message, eval_params):
     :param args: dict or argparse `Namespace` object.
                 Should contain `batch_size`
     """
-    print(message)
     acc = model_eval(
         sess, x, y, pred, X_test, Y_test, args=eval_params)
-    print('Accuracy: %0.4f\n' % acc)
+    if fp != None:
+        fp.write(message + '\nAccuracy: %0.4f\n' % acc)
+    else:
+        print(message + '\nAccuracy: %0.4f\n' % acc)
 
 
 def do_preds(x, model, method, def_model_list=None, detector=None):
@@ -161,7 +162,7 @@ def do_sess_batched_eval(sess, x, x_gen, X_in, X_out_shape, args=None):
         # final output ndarray
         X_out = np.zeros(X_out_shape, dtype=X_in.dtype)
 
-        for batch in tqdm(range(nb_batches)):
+        for batch in range(nb_batches):
             start = batch * args.batch_size
             end = min(len(X_in), start + args.batch_size)
             feed_dict = {x: X_in[start:end]}
@@ -198,3 +199,15 @@ def get_merged_train_data(sess, x, attack_dict, X_train, eval_params, attack_typ
         Y_merged = np.vstack((Y_merged, Y_train_adv))
 
     return X_merged, Y_merged
+
+def write_exp_summary(fp, flags, is_online):
+    string = 'Experiment for AML project.\n' + \
+             'Date: ' + str(datetime.datetime.now()) + '\n\n' + \
+             'Dataset: ' + flags.dataset + '\n' + \
+             'Attack types: ' + str(flags.attack_type) + '\n' + \
+             'Model type: ' + str(flags.attack_model) + '\n' + \
+             'Is Online: ' + str(is_online) + '\n' + \
+             '\n\n'
+    fp.write(string)
+
+

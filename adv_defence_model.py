@@ -12,7 +12,6 @@ import sys
 import numpy as np
 import logging
 import tensorflow as tf
-import math
 from tensorflow.python.platform import app
 from tensorflow.python.platform import flags
 from cleverhans.train import train
@@ -25,10 +24,9 @@ from models.basic_model import ModelBasicCNN
 from cleverhans.utils import set_log_level, to_categorical
 from cleverhans.loss import CrossEntropy
 from sklearn.model_selection import train_test_split
-from utils import do_eval, do_preds, do_sess_batched_eval, get_merged_train_data, get_attack, get_para, get_model
+from utils import get_model, get_attack, get_para, do_eval, do_preds, do_sess_batched_eval, get_merged_train_data, write_exp_summary
 
 FLAGS = flags.FLAGS
-
 
 NB_EPOCHS = 6
 BATCH_SIZE = 128
@@ -38,7 +36,8 @@ BACKPROP_THROUGH_ATTACK = False
 NB_FILTERS = 64
 TRAIN_SIZE = 60000
 TEST_SIZE = 10000
-EVAL_DETECTOR = False
+OUTPUT_FILE = './output.txt'
+EVAL_DETECTOR = True
 IS_ONLINE = True
 
 
@@ -58,7 +57,7 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
     tf.set_random_seed(1234)
 
     # Set logging level to see debug information
-    set_log_level(logging.DEBUG)
+    set_log_level(logging.INFO)
 
     # Create TF session
     if num_threads:
@@ -151,6 +150,7 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
     # Accuracy of detector: 65%
 
     # prepare data
+    print('Preparing merged data...')
     X_merged, Y_merged = get_merged_train_data(
         sess, x, attack_dict, X_train, eval_params, FLAGS.attack_type)
     # train the detector
@@ -164,8 +164,7 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
     loss_d = CrossEntropy(detector, smoothing=label_smoothing)
     print('Train detector with X_merged and Y_merged shape:',
           X_merged.shape, Y_merged.shape)
-    train(sess, loss_d, X_merged, Y_merged,
-          args=train_params, rng=rng, var_list=detector.get_params())
+    
 
     # eval detector
     if EVAL_DETECTOR:
@@ -175,6 +174,9 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
               args=train_params, rng=rng, var_list=detector.get_params())
         do_eval(sess, x, tf.placeholder(tf.float32, shape=(None, (len(FLAGS.attack_type) + 1))),
                 do_preds(x, detector, 'probs'), X_merged_test, Y_merged_test, 'Detector accuracy', eval_params)
+    else:
+        train(sess, loss_d, X_merged, Y_merged,
+              args=train_params, rng=rng, var_list=detector.get_params())
 
     # Make Ensemble model
     def ensemble_model_logits(x):
@@ -195,17 +197,28 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
     ensemble_model_P_U = CallableModelWrapper(ensemble_model_probs_unweighted, 'logits')
 
     # Evaluate the accuracy of model on clean examples
-    print('=============== Results on clean data ===============')
+    fp = open('output.txt', 'w')
+    write_exp_summary(fp, FLAGS, IS_ONLINE)
+    fp.write('\n\n=============== Results on clean data ===============\n\n')
+
+    print('Evaluating on clean data...')
     do_eval(sess, x, y, do_preds(x, model, 'probs'),
-            X_test, Y_test, "origin model on clean data", eval_params)
+            X_test, Y_test, "origin model on clean data", eval_params, fp)
     do_eval(sess, x, y, do_preds(x, ensemble_model_P, 'probs'),
-            X_test, Y_test, "probs ensemble model on clean data", eval_params)
+            X_test, Y_test, "probs ensemble model on clean data", eval_params, fp)
     do_eval(sess, x, y, do_preds(x, ensemble_model_L, 'probs'),
-            X_test, Y_test, "logits ensemble model on clean data", eval_params)
+            X_test, Y_test, "logits ensemble model on clean data", eval_params, fp)
+    
+    # test performance of detector
+    cle_probs = detector.get_probs(x)
+    Clean_probs = do_sess_batched_eval(sess, x, cle_probs, X_test, (X_test.shape[0], len(FLAGS.attack_type)+1), args=eval_params)
+    fp.write('detector mean probs:' + str(np.mean(Clean_probs, axis=0)) + '\n')
+
 
     # Evaluate the accuracy of model on adv examples
     for attack_name in FLAGS.attack_type:
-        print('=============== Results on attack ' + attack_name + ' ===============')
+        print('Evaluating on attack ' + attack_name + '...')
+        fp.write('\n\n=============== Results on attack ' + attack_name + ' ===============\n\n')
         attack_params = get_para(FLAGS.dataset, attack_name)
 
         model_name_dict = {
@@ -220,28 +233,37 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
             from_attack = get_attack(attack_name, from_model, sess)
             adv_x = from_attack.generate(x, **attack_params)
             for to_model in to_model_lst:
-                do_eval(sess, x, y, do_preds(adv_x, to_model, 'probs'), X_test, Y_test, attack_name +
-                        " ==attack on=> " + model_name_dict[from_model] + " ==test on=> " + model_name_dict[to_model], eval_params)
+                start = time.time()
+                message = "==ATTACK ON=> " + model_name_dict[from_model] + " ==TEST ON=> " + model_name_dict[to_model]
+                do_eval(sess, x, y, do_preds(adv_x, to_model, 'probs'), X_test, Y_test,
+                        message, eval_params, fp)
+                end = time.time()
+                print('   ' + message + ' Used: ' + str(end - start))
 
+            # test performance of detector
             att_probs = detector.get_probs(adv_x)
             Attack_probs = do_sess_batched_eval(sess, x, att_probs, X_test, (X_test.shape[0], len(FLAGS.attack_type)+1), args=eval_params)
-            print('detector mean probs:', np.mean(Attack_probs, axis=0))
+            fp.write('detector mean probs:' + str(np.mean(Attack_probs, axis=0)) + '\n')
+
+            fp.write('\n')
 
 
         # generate attack to origin model
         attack_from_to(model, [model, ensemble_model_L, ensemble_model_P])
 
-        # generate attack to weighted ensemble model
-        # logits
-        attack_from_to(ensemble_model_L, [model, ensemble_model_L])
-        # probs
-        attack_from_to(ensemble_model_P, [model, ensemble_model_P])
+        # # generate attack to weighted ensemble model
+        # # logits
+        # attack_from_to(ensemble_model_L, [model, ensemble_model_L])
+        # # probs
+        # attack_from_to(ensemble_model_P, [model, ensemble_model_P])
 
-        # generate attack to unweighted ensemble model
-        # logits
-        attack_from_to(ensemble_model_L_U, [model, ensemble_model_L])
-        # probs
-        attack_from_to(ensemble_model_P_U, [model, ensemble_model_P])
+        # # generate attack to unweighted ensemble model
+        # # logits
+        # attack_from_to(ensemble_model_L_U, [model, ensemble_model_L])
+        # # probs
+        # attack_from_to(ensemble_model_P_U, [model, ensemble_model_P])
+
+    fp.close()
 
         
 
@@ -264,7 +286,7 @@ if __name__ == '__main__':
         'label_smooth', 0.1, ("Amount to subtract from correct label "
                               "and distribute among other labels"))
 
-    flags.DEFINE_list('attack_type', ['fgsm', 'pgd'], ("Attack type: 'fgsm'->'fast gradient sign method', "
+    flags.DEFINE_list('attack_type', ['fgsm', 'pgd', 'bim'], ("Attack type: 'fgsm'->'fast gradient sign method', "
                                                        "'pgd'->'projected gradient descent', "
                                                        "'bim'->'basic iterative method',"
                                                        "'cwl2'->'Carlini & Wagner L2',"
