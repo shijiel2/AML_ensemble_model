@@ -162,7 +162,7 @@ def do_sess_batched_eval(sess, x, x_gen, X_in, X_out_shape, args=None):
         # final output ndarray
         X_out = np.zeros(X_out_shape, dtype=X_in.dtype)
 
-        for batch in range(nb_batches):
+        for batch in tqdm(range(nb_batches)):
             start = batch * args.batch_size
             end = min(len(X_in), start + args.batch_size)
             feed_dict = {x: X_in[start:end]}
@@ -211,3 +211,16 @@ def write_exp_summary(fp, flags, is_online):
     fp.write(string)
 
 
+def test_detector(sess, x, detector, x_in, X_test, X_out_shape, args, fp=None):
+    det_probs = detector.get_probs(x_in)
+    Probs = do_sess_batched_eval(sess, x, det_probs, X_test, X_out_shape, args=args)
+    
+    Preds = np.argmax(Probs, axis=1)
+    unique, counts = np.unique(Preds, return_counts=True)
+    
+    if fp is not None:
+        fp.write('detector mean probs:' + str(np.mean(Probs, axis=0)) + '\n')
+        fp.write('detector preds counts:' + str(dict(zip(unique, counts))) + '\n')
+    else:
+        print('detector mean probs:' + str(np.mean(Probs, axis=0)) + '\n')
+        print('detector preds counts:' + str(dict(zip(unique, counts))))
