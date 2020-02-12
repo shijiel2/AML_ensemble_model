@@ -1,6 +1,7 @@
-"""Runs CleverHans attacks on the Madry Lab MNIST challenge model
-
 """
+Use unweighted to attack weighted
+"""
+
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -45,7 +46,7 @@ NB_FILTERS = 64
 TRAIN_SIZE = 60000
 TEST_SIZE = 10000
 IS_ONLINE = True
-CHECK_DET = True
+CHECK_DET = False
 
 def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
                   test_end=TEST_SIZE, nb_epochs=NB_EPOCHS, batch_size=BATCH_SIZE,
@@ -109,6 +110,10 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
         y = tf.placeholder(tf.float32, shape=(None, 10))
         input_shape = [32, 32, 3]
 
+    '''
+    ----------------- create model0, attack model and train
+    '''
+
     adv_x = {}
     # define and train clean model to be defenced on
     model = get_model(FLAGS.dataset, FLAGS.attack_model, 'model', nb_classes, nb_filters,
@@ -140,6 +145,11 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
         def_model_list.append(model_i)
         adv_x[attack_name] = attack(x)
 
+
+    '''
+    ----------------- weighted class train
+    '''
+
     # define and train attack detector model
     new_nb_classes = len(adv_x)
     det_model = get_model(FLAGS.dataset, FLAGS.attack_model, 'detector', new_nb_classes, nb_filters,
@@ -148,57 +158,56 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
     train_attack_detector(sess,x,det_model,adv_x, X_train, Y_train, train_params, rng)
 
 
+    '''
+    ----------------- create ens model
+    '''
     # Make Ensemble model
     def ensemble_model_logits(x):
-        return do_logits(x, model,det_model, def_model_list=def_model_list)
+        return do_logits(x, model, def_model_list=def_model_list)
     def ensemble_model_probs(x):
-        return tf.math.log(do_probs(x, model,det_model, def_model_list=def_model_list))
+        return tf.math.log(do_probs(x, model, def_model_list=def_model_list))
 
     ensemble_model_L = CallableModelWrapper(ensemble_model_logits, 'logits')
     ensemble_model_P = CallableModelWrapper(ensemble_model_probs, 'logits')
 
-    # Evaluate the accuracy of model on clean examples
-    do_eval(sess, x, y, do_probs(x, model), 
-            X_test, Y_test, "origin model on clean data", eval_params)
-    do_eval(sess, x, y, do_probs(x, ensemble_model_L), 
-            X_test, Y_test, "ensemble model on clean data, with logits", eval_params)
-    do_eval(sess, x, y, do_probs(x, ensemble_model_P), 
-            X_test, Y_test, "ensemble model on clean data, with probs", eval_params)
-    
+
+    # Make Ensemble model
+    def weighted_ensemble_model_logits(x):
+        return do_logits(x, model,det_model, def_model_list=def_model_list)
+    def weighted_ensemble_model_probs(x):
+        return tf.math.log(do_probs(x, model,det_model, def_model_list=def_model_list))
+
+    weighted_ensemble_model_L = CallableModelWrapper(weighted_ensemble_model_logits, 'logits')
+    weighted_ensemble_model_P = CallableModelWrapper(weighted_ensemble_model_probs, 'logits')
+
+
+    '''
+    ----------------- model eval
+    '''
 
     # Evaluate the accuracy of model on adv examples
     for i, attack_name in enumerate(FLAGS.attack_type):
         attack_params = get_para(FLAGS.dataset, attack_name, att=True)
 
-        # generate attack to origin model
-        origin_attack = get_attack(attack_name, model, sess)
-        origin_adv_x = origin_attack.generate(x, **attack_params)
-        
-        do_eval(sess, x, y, do_probs(origin_adv_x, model), 
-                X_test, Y_test, attack_name + "-> origin model, test on origin model", eval_params)
-        do_eval(sess, x, y, do_probs(origin_adv_x, ensemble_model_L), 
-                X_test, Y_test, attack_name + "-> origin model, test on ensemble model, using logits", eval_params)
-        do_eval(sess, x, y, do_probs(origin_adv_x, ensemble_model_P), 
-                X_test, Y_test, attack_name + "-> origin model, test on ensemble model, using probs", eval_params)
-        
-        # generate attack to ensemble model
-        print('logits')
-        ensemble_attack_L = get_attack(attack_name, ensemble_model_L, sess)
-        ensemble_adv_x_L = ensemble_attack_L.generate(x, **attack_params)
-        do_eval(sess, x, y, do_probs(ensemble_adv_x_L, model), 
-            X_test, Y_test, attack_name + "-> ensemble model, test on original model", eval_params)
-        do_eval(sess, x, y, do_probs(ensemble_adv_x_L, ensemble_model_L), 
-            X_test, Y_test, attack_name + "-> ensemble model, test on ensemble model", eval_params)
-
-        # generate attack to ensemble model
-        print('probs')
+        # generate attack from un-w ensemble model attack wgted, based on probs
+        print('based on probs')
         ensemble_attack_P = get_attack(attack_name, ensemble_model_P, sess)
         ensemble_adv_x_P = ensemble_attack_P.generate(x, **attack_params)
-        do_eval(sess, x, y, do_probs(ensemble_adv_x_P, model), 
-            X_test, Y_test, attack_name + "-> ensemble model, test on original model", eval_params)
-        do_eval(sess, x, y, do_probs(ensemble_adv_x_P, ensemble_model_P), 
-            X_test, Y_test, attack_name + "-> ensemble model, test on ensemble model", eval_params)
+        do_eval(sess, x, y, do_probs(ensemble_adv_x_P, weighted_ensemble_model_P), 
+            X_test, Y_test, attack_name + "-> from unweighted, on weighted", eval_params)
 
+
+        # generate attack from un-w ensemble model attack wgted, based on logits
+        print('based on logits')
+        ensemble_attack_L = get_attack(attack_name, ensemble_model_L, sess)
+        ensemble_adv_x_L = ensemble_attack_P.generate(x, **attack_params)
+        do_eval(sess, x, y, do_probs(ensemble_adv_x_L, weighted_ensemble_model_L),
+                X_test, Y_test, attack_name + "-> from unweighted, on weighted", eval_params)
+
+
+'''
+------------ help function ---------------
+'''
 
 def train_attack_detector(sess, x, det_model,adv_x, X_train, Y_train, train_params, rng, label_smoothing=0.1):
     train_params = {
@@ -240,9 +249,6 @@ def train_attack_detector(sess, x, det_model,adv_x, X_train, Y_train, train_para
         else:
             train(sess, loss_det, X_class, Y_class,
                   args=train_params, rng=rng, var_list = det_model.get_params())
-    
-
-
 
 
 def do_eval(sess, x, y, pred, X_test, Y_test, message, eval_params):
@@ -268,7 +274,7 @@ def do_probs(x, model, detector=None, def_model_list=None):
         return tf.reduce_sum(probs, 1)
     else:
         probs = [m.get_probs(x) for m in models]
-        return tf.reduce_mean(probs, 0)
+        return tf.reduce_mean(probs, 1)
 
 """
 Return the mean logits of multiple models
@@ -289,9 +295,11 @@ def do_logits(x, model, detector=None, def_model_list=None):
         return tf.reduce_sum(logits, 1)
     else:
         logits = [m.get_logits(x) for m in models]
-        return tf.reduce_mean(logits, 0)
+        return tf.reduce_mean(logits, 1)
 
-
+'''
+----------------- model related
+'''
 
 def get_model(dataset, attack_model, scope, nb_classes, nb_filters, input_shape):
     print(dataset, attack_model,nb_classes)
@@ -325,8 +333,6 @@ def get_attack(attack_type, model, sess):
     else:
         raise ValueError(attack_type)
     return attack
-
-# function to get the parameters for adv_x
 
 # function to get the parameters for adv_x
 def get_para(dataset, attack_type, att=False):
@@ -383,7 +389,6 @@ def get_para(dataset, attack_type, att=False):
     return attack_params
 
 
-
 def main(argv):
     #  from cleverhans_tutorials import check_installation
     #  check_installation(__file__)
@@ -393,7 +398,7 @@ def main(argv):
                   clean_train=FLAGS.clean_train,
                   backprop_through_attack=FLAGS.backprop_through_attack,
                   nb_filters=FLAGS.nb_filters)
-
+    
 
 if __name__ == '__main__':
 
@@ -401,7 +406,7 @@ if __name__ == '__main__':
         'label_smooth', 0.1, ("Amount to subtract from correct label "
                               "and distribute among other labels"))
 
-    flags.DEFINE_list('attack_type', ['fgsm','pgd'], ("Attack type: 'fgsm'->'fast gradient sign method', "
+    flags.DEFINE_list('attack_type', ['fgsm','pgd','bim'], ("Attack type: 'fgsm'->'fast gradient sign method', "
                                                        "'pgd'->'projected gradient descent', "
                                                        "'bim'->'basic iterative method',"
                                                        "'cwl2'->'Carlini & Wagner L2',"
