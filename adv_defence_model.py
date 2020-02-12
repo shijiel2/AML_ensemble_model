@@ -175,11 +175,6 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
         do_eval(sess, x, tf.placeholder(tf.float32, shape=(None, (len(FLAGS.attack_type) + 1))),
                 do_preds(x, detector, 'probs'), X_merged_test, Y_merged_test, 'Detector accuracy', eval_params)
     else:
-        det_train_params = {
-            'nb_epochs': 10,
-            'batch_size': batch_size,
-            'learning_rate': 0.0001
-        }
         train(sess, loss_d, X_merged, Y_merged,
               args=train_params, rng=rng, var_list=detector.get_params())
 
