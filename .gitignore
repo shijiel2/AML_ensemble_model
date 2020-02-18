@@ -125,3 +125,6 @@ dmypy.json
 .pyre/
 .DS_Store
 .vscode/settings.json
+
+# my folders
+exps/

@@ -11,6 +11,7 @@ import time
 import sys
 import numpy as np
 import logging
+from tqdm import tqdm
 import tensorflow as tf
 from tensorflow.python.platform import app
 from tensorflow.python.platform import flags
@@ -24,7 +25,7 @@ from models.basic_model import ModelBasicCNN
 from cleverhans.utils import set_log_level, to_categorical
 from cleverhans.loss import CrossEntropy
 from sklearn.model_selection import train_test_split
-from utils import do_eval, do_preds, do_transform, get_merged_train_data, get_attack, get_para, get_model
+from utils import get_model, get_attack, get_para, get_merged_train_data, do_sess_batched_eval, do_preds, write_exp_summary, do_eval, test_detector
 
 FLAGS = flags.FLAGS
 
@@ -37,8 +38,9 @@ BACKPROP_THROUGH_ATTACK = False
 NB_FILTERS = 64
 TRAIN_SIZE = 60000
 TEST_SIZE = 10000
+OUTPUT_FILE = './output.txt'
 EVAL_DETECTOR = False
-IS_ONLINE = False
+IS_ONLINE = True
 
 
 def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
@@ -57,7 +59,7 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
     tf.set_random_seed(1234)
 
     # Set logging level to see debug information
-    set_log_level(logging.DEBUG)
+    set_log_level(logging.INFO)
 
     # Create TF session
     if num_threads:
@@ -147,9 +149,8 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
         def_model_list.append(model_i)
 
     # Make and train detector that classfies whcih source (clean or adv_1 or adv_2...)
-    # Accuracy of detector: 65%
-
     # prepare data
+    print('Preparing merged data...')
     X_merged, Y_merged = get_merged_train_data(
         sess, x, attack_dict, X_train, eval_params, FLAGS.attack_type)
     # train the detector
@@ -163,8 +164,7 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
     loss_d = CrossEntropy(detector, smoothing=label_smoothing)
     print('Train detector with X_merged and Y_merged shape:',
           X_merged.shape, Y_merged.shape)
-    train(sess, loss_d, X_merged, Y_merged,
-          args=train_params, rng=rng, var_list=detector.get_params())
+    
 
     # eval detector
     if EVAL_DETECTOR:
@@ -174,6 +174,9 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
               args=train_params, rng=rng, var_list=detector.get_params())
         do_eval(sess, x, tf.placeholder(tf.float32, shape=(None, (len(FLAGS.attack_type) + 1))),
                 do_preds(x, detector, 'probs'), X_merged_test, Y_merged_test, 'Detector accuracy', eval_params)
+    else:
+        train(sess, loss_d, X_merged, Y_merged,
+              args=train_params, rng=rng, var_list=detector.get_params())
 
     # Make Ensemble model
     def ensemble_model_logits(x):
@@ -194,17 +197,27 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
     ensemble_model_P_U = CallableModelWrapper(ensemble_model_probs_unweighted, 'logits')
 
     # Evaluate the accuracy of model on clean examples
-    print('=============== Results on clean data ===============')
+    file_name = FLAGS.attack_model + '_' + str(IS_ONLINE) + '.txt'
+    fp = open(file_name, 'w')
+    write_exp_summary(fp, FLAGS, IS_ONLINE)
+    fp.write('\n\n=============== Results on clean data ===============\n\n')
+
+    print('Evaluating on clean data...')
     do_eval(sess, x, y, do_preds(x, model, 'probs'),
-            X_test, Y_test, "origin model on clean data", eval_params)
+            X_test, Y_test, "origin model on clean data", eval_params, fp)
     do_eval(sess, x, y, do_preds(x, ensemble_model_P, 'probs'),
-            X_test, Y_test, "probs ensemble model on clean data", eval_params)
+            X_test, Y_test, "probs ensemble model on clean data", eval_params, fp)
     do_eval(sess, x, y, do_preds(x, ensemble_model_L, 'probs'),
-            X_test, Y_test, "logits ensemble model on clean data", eval_params)
+            X_test, Y_test, "logits ensemble model on clean data", eval_params, fp)
+    
+    # test performance of detector
+    test_detector(sess, x, detector, x, X_test, (X_test.shape[0], len(FLAGS.attack_type)+1), eval_params, fp=fp)
+
 
     # Evaluate the accuracy of model on adv examples
     for attack_name in FLAGS.attack_type:
-        print('=============== Results on attack ' + attack_name + ' ===============')
+        print('Evaluating on attack ' + attack_name + '...')
+        fp.write('\n\n=============== Results on attack ' + attack_name + ' ===============\n\n')
         attack_params = get_para(FLAGS.dataset, attack_name)
 
         model_name_dict = {
@@ -218,9 +231,19 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
         def attack_from_to(from_model, to_model_lst):
             from_attack = get_attack(attack_name, from_model, sess)
             adv_x = from_attack.generate(x, **attack_params)
+
+            # test performance of detector
+            test_detector(sess, x, detector, adv_x, X_test, (X_test.shape[0], len(FLAGS.attack_type)+1), eval_params, fp=fp)
+
             for to_model in to_model_lst:
-                do_eval(sess, x, y, do_preds(adv_x, to_model, 'probs'), X_test, Y_test, attack_name +
-                        " ==attack on=> " + model_name_dict[from_model] + " ==test on=> " + model_name_dict[to_model], eval_params)
+                start = time.time()
+                message = "==ATTACK ON=> " + model_name_dict[from_model] + " ==TEST ON=> " + model_name_dict[to_model]
+                do_eval(sess, x, y, do_preds(adv_x, to_model, 'probs'), X_test, Y_test,
+                        message, eval_params, fp)
+                end = time.time()
+                print('   ' + message + ' Used: ' + str(end - start))
+            fp.write('\n')
+
 
         # generate attack to origin model
         attack_from_to(model, [model, ensemble_model_L, ensemble_model_P])
@@ -236,6 +259,8 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
         attack_from_to(ensemble_model_L_U, [model, ensemble_model_L])
         # probs
         attack_from_to(ensemble_model_P_U, [model, ensemble_model_P])
+
+    fp.close()
 
         
 
