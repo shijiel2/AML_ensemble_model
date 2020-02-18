@@ -25,7 +25,7 @@ from models.basic_model import ModelBasicCNN
 from cleverhans.utils import set_log_level, to_categorical
 from cleverhans.loss import CrossEntropy
 from sklearn.model_selection import train_test_split
-from utils import get_model, get_attack, get_para, get_merged_train_data, do_sess_batched_eval, do_preds, write_exp_summary, do_eval, test_detector
+from utils import get_model, get_attack, get_para, get_merged_train_data, do_sess_batched_eval, do_preds, write_exp_summary, do_eval, test_detector, train_detector
 
 FLAGS = flags.FLAGS
 
@@ -38,9 +38,12 @@ BACKPROP_THROUGH_ATTACK = False
 NB_FILTERS = 64
 TRAIN_SIZE = 60000
 TEST_SIZE = 10000
-OUTPUT_FILE = './output.txt'
+REINFORE_ENS = ['fgsm', 'pgd']
 EVAL_DETECTOR = False
-IS_ONLINE = True
+PRED_RANDOM = False
+RANDOM_K = 3
+RANDOM_STDDEV = 0.1
+IS_ONLINE = False
 
 
 def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
@@ -125,9 +128,6 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
     # For the 1...N attack methods, create adv samples and train defence models model_1...model_n
     for i, attack_name in enumerate(FLAGS.attack_type):
         attack_params = get_para(FLAGS.dataset, attack_name)
-        # special case for PGD trainning
-        if attack_name == 'pgd':
-            attack_params.update({'nb_iter': 10})
 
         model_i = get_model(FLAGS.dataset, FLAGS.attack_model,
                             'model_'+str(i), nb_classes, nb_filters, input_shape)
@@ -148,58 +148,73 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
 
         def_model_list.append(model_i)
 
-    # Make and train detector that classfies whcih source (clean or adv_1 or adv_2...)
-    # prepare data
-    print('Preparing merged data...')
-    X_merged, Y_merged = get_merged_train_data(
-        sess, x, attack_dict, X_train, eval_params, FLAGS.attack_type)
-    # train the detector
-    if FLAGS.dataset == 'mnist':
-        detector = ModelBasicCNN(
-            'detector', (len(FLAGS.attack_type) + 1), nb_filters)
-    elif FLAGS.dataset == 'cifar10':
-        detector = ModelAllConvolutional(
-            'detector', (len(FLAGS.attack_type) + 1), nb_filters, input_shape=input_shape)
-
-    loss_d = CrossEntropy(detector, smoothing=label_smoothing)
-    print('Train detector with X_merged and Y_merged shape:',
-          X_merged.shape, Y_merged.shape)
-    
-
-    # eval detector
-    if EVAL_DETECTOR:
-        X_merged_train, X_merged_test, Y_merged_train, Y_merged_test = train_test_split(
-            X_merged, Y_merged, test_size=0.20, random_state=42)
-        train(sess, loss_d, X_merged_train, Y_merged_train,
-              args=train_params, rng=rng, var_list=detector.get_params())
-        do_eval(sess, x, tf.placeholder(tf.float32, shape=(None, (len(FLAGS.attack_type) + 1))),
-                do_preds(x, detector, 'probs'), X_merged_test, Y_merged_test, 'Detector accuracy', eval_params)
-    else:
-        train(sess, loss_d, X_merged, Y_merged,
-              args=train_params, rng=rng, var_list=detector.get_params())
-
-    # Make Ensemble model
-    def ensemble_model_logits(x):
-        return do_preds(x, model, 'logits', def_model_list=def_model_list, detector=detector)
-
+    # Make unweighted Ensemble model
     def ensemble_model_logits_unweighted(x):
         return do_preds(x, model, 'logits', def_model_list=def_model_list)
 
-    def ensemble_model_probs(x):
-        return tf.math.log(do_preds(x, model, 'probs', def_model_list=def_model_list, detector=detector))
-
     def ensemble_model_probs_unweighted(x):
         return tf.math.log(do_preds(x, model, 'probs', def_model_list=def_model_list))
-
-    ensemble_model_L = CallableModelWrapper(ensemble_model_logits, 'logits')
+    
     ensemble_model_L_U = CallableModelWrapper(ensemble_model_logits_unweighted, 'logits')
-    ensemble_model_P = CallableModelWrapper(ensemble_model_probs, 'logits')
     ensemble_model_P_U = CallableModelWrapper(ensemble_model_probs_unweighted, 'logits')
+
+    # Reinforce weighted ensemble model
+    if REINFORE_ENS:
+        def reinforce_ensemble(unweighted_model, name):
+            
+            ens_def_model_list = def_model_list.copy()
+            
+            for i, attack_name in enumerate(REINFORE_ENS):
+                attack_params = get_para(FLAGS.dataset, attack_name)
+                model_i = get_model(FLAGS.dataset, FLAGS.attack_model,
+                            name + '_ens_model_'+str(i), nb_classes, nb_filters, input_shape)
+                attack_method = get_attack(attack_name, unweighted_model, sess)
+                
+                def attack(x):
+                    return attack_method.generate(x, **attack_params)
+                attack_dict[str(attack_name + name)] = attack
+
+                loss_i = CrossEntropy(model_i, smoothing=label_smoothing, attack=attack, adv_coeff=1.)
+                print('Train defence model_i for attack:', attack_name)
+                train(sess, loss_i, X_train, Y_train,
+                      args=train_params, rng=rng, var_list=model_i.get_params())
+
+                ens_def_model_list.append(model_i)
+            
+            ens_attack_types = FLAGS.attack_type + [str(x + name) for x in REINFORE_ENS]
+            detector = train_detector(sess, x, name, attack_dict, X_train, eval_params, ens_attack_types, FLAGS.dataset, nb_filters, input_shape, label_smoothing, train_params, rng, EVAL_DETECTOR)
+            
+            return ens_def_model_list, detector
+
+        logits_ens_def_model_list, logits_detector = reinforce_ensemble(ensemble_model_L_U, 'logits')
+        probs_ens_def_model_list, probs_detector = reinforce_ensemble(ensemble_model_P_U, 'probs')
+
+        def ensemble_model_logits(x):
+            return do_preds(x, model, 'logits', def_model_list=logits_ens_def_model_list, detector=logits_detector, random=PRED_RANDOM, k=RANDOM_K, stddev=RANDOM_STDDEV)
+        
+        def ensemble_model_probs(x):
+            return tf.math.log(do_preds(x, model, 'probs', def_model_list=probs_ens_def_model_list, detector=probs_detector, random=PRED_RANDOM, k=RANDOM_K, stddev=RANDOM_STDDEV))
+
+        ensemble_model_L = CallableModelWrapper(ensemble_model_logits, 'logits')
+        ensemble_model_P = CallableModelWrapper(ensemble_model_probs, 'logits')
+
+    else:
+        # Make and train detector that classfies whcih source (clean or adv_1 or adv_2...)
+        detector = train_detector(sess, x, 'clean', attack_dict, X_train, eval_params, FLAGS.attack_type, FLAGS.dataset, nb_filters, input_shape, label_smoothing, train_params, rng, EVAL_DETECTOR)
+        # Make weigthed ensemble model
+        def ensemble_model_logits(x):
+            return do_preds(x, model, 'logits', def_model_list=def_model_list, detector=detector, random=PRED_RANDOM, k=RANDOM_K, stddev=RANDOM_STDDEV)
+        
+        def ensemble_model_probs(x):
+            return tf.math.log(do_preds(x, model, 'probs', def_model_list=def_model_list, detector=detector, random=PRED_RANDOM, k=RANDOM_K, stddev=RANDOM_STDDEV))
+        
+        ensemble_model_L = CallableModelWrapper(ensemble_model_logits, 'logits')
+        ensemble_model_P = CallableModelWrapper(ensemble_model_probs, 'logits')
 
     # Evaluate the accuracy of model on clean examples
     file_name = FLAGS.attack_model + '_' + str(IS_ONLINE) + '.txt'
     fp = open(file_name, 'w')
-    write_exp_summary(fp, FLAGS, IS_ONLINE)
+    write_exp_summary(fp, FLAGS, IS_ONLINE, PRED_RANDOM, RANDOM_K, RANDOM_STDDEV, REINFORE_ENS)
     fp.write('\n\n=============== Results on clean data ===============\n\n')
 
     print('Evaluating on clean data...')
@@ -209,15 +224,25 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
             X_test, Y_test, "probs ensemble model on clean data", eval_params, fp)
     do_eval(sess, x, y, do_preds(x, ensemble_model_L, 'probs'),
             X_test, Y_test, "logits ensemble model on clean data", eval_params, fp)
-    
-    # test performance of detector
-    test_detector(sess, x, detector, x, X_test, (X_test.shape[0], len(FLAGS.attack_type)+1), eval_params, fp=fp)
 
+    # test performance of detector
+    if REINFORE_ENS:
+        fp.write('Detector logits\n')
+        test_detector(sess, x, logits_detector, x, X_test, (X_test.shape[0], len(
+            logits_ens_def_model_list)+1), eval_params, fp=fp, random=PRED_RANDOM, k=RANDOM_K, stddev=RANDOM_STDDEV)
+        fp.write('Detector probs\n')
+        test_detector(sess, x, probs_detector, x, X_test, (X_test.shape[0], len(
+            probs_ens_def_model_list)+1), eval_params, fp=fp, random=PRED_RANDOM, k=RANDOM_K, stddev=RANDOM_STDDEV)
+    else:
+        fp.write('Detector clean\n')
+        test_detector(sess, x, detector, x, X_test, (X_test.shape[0], len(
+            FLAGS.attack_type)+1), eval_params, fp=fp, random=PRED_RANDOM, k=RANDOM_K, stddev=RANDOM_STDDEV)
 
     # Evaluate the accuracy of model on adv examples
     for attack_name in FLAGS.attack_type:
         print('Evaluating on attack ' + attack_name + '...')
-        fp.write('\n\n=============== Results on attack ' + attack_name + ' ===============\n\n')
+        fp.write('\n\n=============== Results on attack ' +
+                 attack_name + ' ===============\n\n')
         attack_params = get_para(FLAGS.dataset, attack_name)
 
         model_name_dict = {
@@ -233,17 +258,33 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
             adv_x = from_attack.generate(x, **attack_params)
 
             # test performance of detector
-            test_detector(sess, x, detector, adv_x, X_test, (X_test.shape[0], len(FLAGS.attack_type)+1), eval_params, fp=fp)
+            if not REINFORE_ENS:
+                test_detector(sess, x, detector, adv_x, X_test, (X_test.shape[0], len(
+                        FLAGS.attack_type)+1), eval_params, fp=fp, random=PRED_RANDOM, k=RANDOM_K, stddev=RANDOM_STDDEV)
 
             for to_model in to_model_lst:
                 start = time.time()
-                message = "==ATTACK ON=> " + model_name_dict[from_model] + " ==TEST ON=> " + model_name_dict[to_model]
+
+                # test performance of detector
+                if REINFORE_ENS:
+                    if to_model in (model, ensemble_model_L, ensemble_model_L_U):
+                        fp.write('Detector logits\n')
+                        test_detector(sess, x, logits_detector, adv_x, X_test, (X_test.shape[0], len(
+                            logits_ens_def_model_list)+1), eval_params, fp=fp, random=PRED_RANDOM, k=RANDOM_K, stddev=RANDOM_STDDEV)
+                    if to_model in (model, ensemble_model_P, ensemble_model_P_U):
+                        fp.write('Detector probs\n')
+                        test_detector(sess, x, probs_detector, adv_x, X_test, (X_test.shape[0], len(
+                            probs_ens_def_model_list)+1), eval_params, fp=fp, random=PRED_RANDOM, k=RANDOM_K, stddev=RANDOM_STDDEV)    
+                
+                message = "==ATTACK ON=> " + \
+                    model_name_dict[from_model] + \
+                    " ==TEST ON=> " + model_name_dict[to_model]
                 do_eval(sess, x, y, do_preds(adv_x, to_model, 'probs'), X_test, Y_test,
                         message, eval_params, fp)
+                
                 end = time.time()
                 print('   ' + message + ' Used: ' + str(end - start))
             fp.write('\n')
-
 
         # generate attack to origin model
         attack_from_to(model, [model, ensemble_model_L, ensemble_model_P])
@@ -261,9 +302,6 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
         attack_from_to(ensemble_model_P_U, [model, ensemble_model_P])
 
     fp.close()
-
-        
-
 
 
 def main(argv):
@@ -288,11 +326,11 @@ if __name__ == '__main__':
                                                        "'bim'->'basic iterative method',"
                                                        "'cwl2'->'Carlini & Wagner L2',"
                                                        "'jsma'->'jsma method'"))
-    flags.DEFINE_string('dataset', 'mnist',
+    flags.DEFINE_string('dataset', 'cifar10',
                         ("dataset: 'mnist'->'mnist dataset', "
                          "'fmnist'->'fashion mnist dataset', "
                          "'cifar10'->'cifar-10 dataset'"))
-    flags.DEFINE_string('attack_model', 'basic_model',
+    flags.DEFINE_string('attack_model', 'all_cnn',
                         ("defence_model: 'basic_model'->'a cnn model for mnist', "
                          "'all_cnn'->'a cnn model for cifar10', "
                          "'cifar10_model'->'model for cifar10', "

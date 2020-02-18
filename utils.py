@@ -10,10 +10,14 @@ from models.cifar10_model import make_wresnet
 from models.mnist_model import MadryMNIST
 from cleverhans.attacks import *
 import datetime
+from sklearn.model_selection import train_test_split
+from cleverhans.loss import CrossEntropy
+from cleverhans.train import train
 
 """
 **************************** Helper Functions ****************************
 """
+
 
 def get_model(dataset, attack_model, scope, nb_classes, nb_filters, input_shape):
     if dataset == 'mnist':
@@ -95,7 +99,6 @@ def get_para(dataset, attack_type):
     return attack_params
 
 
-
 def do_eval(sess, x, y, pred, X_test, Y_test, message, eval_params, fp=None):
     """
     Compute the accuracy of a TF model on some data
@@ -116,7 +119,7 @@ def do_eval(sess, x, y, pred, X_test, Y_test, message, eval_params, fp=None):
         print(message + '\nAccuracy: %0.4f\n' % acc)
 
 
-def do_preds(x, model, method, def_model_list=None, detector=None):
+def do_preds(x, model, method, def_model_list=None, detector=None, random=False, k=5, stddev=1.0):
     """
     Return the mean prob of multiple models
     """
@@ -128,14 +131,25 @@ def do_preds(x, model, method, def_model_list=None, detector=None):
         preds = tf.stack([get_pred(x, m, method) for m in models], 1)
         return tf.reduce_mean(preds, 1)
     else:
+        weights = get_pred(x, detector, 'probs',
+                           random=random, k=k, stddev=stddev)
         preds = tf.stack([get_pred(x, m, method) for m in models], 1)
-        preds = tf.math.multiply(preds, detector.get_probs(x)[:, :, None])
+        preds = tf.math.multiply(preds, weights[:, :, None])
         return tf.reduce_sum(preds, 1)
 
 
-def get_pred(x, model, method):
+def get_pred(x, model, method, random=False, k=5, stddev=1.0):
     if method == 'probs':
-        return model.get_probs(x)
+        if not random:
+            return model.get_probs(x)
+        else:
+            probs = []
+            for _ in range(k):
+                new_x = x + \
+                    tf.random.normal(tf.shape(x), dtype=x.dtype, stddev=stddev)
+                probs.append(model.get_probs(new_x))
+            return tf.reduce_mean(tf.stack(probs, 0), 0)
+
     elif method == 'logits':
         return model.get_logits(x)
 
@@ -200,27 +214,67 @@ def get_merged_train_data(sess, x, attack_dict, X_train, eval_params, attack_typ
 
     return X_merged, Y_merged
 
-def write_exp_summary(fp, flags, is_online):
+def test_detector(sess, x, detector, x_in, X_test, X_out_shape, args, fp=None, random=False, k=5, stddev=1.0):
+    det_probs = get_pred(x_in, detector, 'probs',
+                         random=random, k=k, stddev=stddev)
+    Probs = do_sess_batched_eval(
+        sess, x, det_probs, X_test, X_out_shape, args=args)
+
+    Preds = np.argmax(Probs, axis=1)
+    unique, counts = np.unique(Preds, return_counts=True)
+
+    if fp is not None:
+        fp.write('detector mean probs:' + str(np.mean(Probs, axis=0)) + '\n')
+        fp.write('detector preds counts:' +
+                 str(dict(zip(unique, counts))) + '\n')
+    else:
+        print('detector mean probs:' + str(np.mean(Probs, axis=0)) + '\n')
+        print('detector preds counts:' + str(dict(zip(unique, counts))))
+
+
+def train_detector(sess, x, name, attack_dict, X_train, eval_params, attack_types, dataset, nb_filters, input_shape, label_smoothing, train_params, rng, eval_detector):
+    # Make and train detector that classfies whcih source (clean or adv_1 or adv_2...)
+    # prepare data
+    print('Preparing merged data...')
+    X_merged, Y_merged = get_merged_train_data(
+        sess, x, attack_dict, X_train, eval_params, attack_types)
+    # train the detector
+    if dataset == 'mnist':
+        detector = ModelBasicCNN(
+            'detector_'+name, (len(attack_types) + 1), nb_filters)
+    elif dataset == 'cifar10':
+        detector = ModelAllConvolutional(
+            'detector_'+name, (len(attack_types) + 1), nb_filters, input_shape=input_shape)
+
+    loss_d = CrossEntropy(detector, smoothing=label_smoothing)
+    print('Train detector with X_merged and Y_merged shape:',
+          X_merged.shape, Y_merged.shape)
+
+    # eval detector
+    if eval_detector:
+        X_merged_train, X_merged_test, Y_merged_train, Y_merged_test = train_test_split(
+            X_merged, Y_merged, test_size=0.20, random_state=42)
+        train(sess, loss_d, X_merged_train, Y_merged_train,
+              args=train_params, rng=rng, var_list=detector.get_params())
+        do_eval(sess, x, tf.placeholder(tf.float32, shape=(None, (len(attack_types) + 1))),
+                do_preds(x, detector, 'probs'), X_merged_test, Y_merged_test, 'Detector accuracy', eval_params)
+    else:
+        train(sess, loss_d, X_merged, Y_merged,
+              args=train_params, rng=rng, var_list=detector.get_params())
+
+    return detector
+
+
+def write_exp_summary(fp, flags, is_online, pred_random, k, stddev, reinforcement_ens):
     string = 'Experiment for AML project.\n' + \
              'Date: ' + str(datetime.datetime.now()) + '\n\n' + \
              'Dataset: ' + flags.dataset + '\n' + \
              'Attack types: ' + str(flags.attack_type) + '\n' + \
              'Model type: ' + str(flags.attack_model) + '\n' + \
              'Is Online: ' + str(is_online) + '\n' + \
+             'Randomness in prediction: ' + str(pred_random) + '\n' + \
+             'Random K: ' + str(k) + '\n' + \
+             'Stddev: ' + str(stddev) + '\n' + \
+             'Ensemble reinforcement: ' + str(reinforcement_ens) + '\n' + \
              '\n\n'
     fp.write(string)
-
-
-def test_detector(sess, x, detector, x_in, X_test, X_out_shape, args, fp=None):
-    det_probs = detector.get_probs(x_in)
-    Probs = do_sess_batched_eval(sess, x, det_probs, X_test, X_out_shape, args=args)
-    
-    Preds = np.argmax(Probs, axis=1)
-    unique, counts = np.unique(Preds, return_counts=True)
-    
-    if fp is not None:
-        fp.write('detector mean probs:' + str(np.mean(Probs, axis=0)) + '\n')
-        fp.write('detector preds counts:' + str(dict(zip(unique, counts))) + '\n')
-    else:
-        print('detector mean probs:' + str(np.mean(Probs, axis=0)) + '\n')
-        print('detector preds counts:' + str(dict(zip(unique, counts))))
