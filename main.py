@@ -7,7 +7,6 @@ from __future__ import division
 from __future__ import print_function
 
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 import time
 import sys
 import numpy as np
@@ -41,7 +40,7 @@ def defence_frame():
     tf.set_random_seed(1234)
 
     # Set logging level to see debug information
-    set_log_level(logging.ERROR)
+    set_log_level(logging.INFO)
 
     # Create TF session
     sess = tf.Session(config=tf.ConfigProto(**Settings.config_args))
@@ -50,6 +49,8 @@ def defence_frame():
     def_model_list = []
     # dict of attack_name -> attack function
     attack_dict = {}
+    # dict of model names
+    model_name_dict = {}
 
     # Dataset for quick access
     X_train = Settings.X_train
@@ -67,6 +68,7 @@ def defence_frame():
     print('Train clean model_0')
     train(sess, loss, X_train, Y_train,
           args=Settings.train_params, rng=Settings.rng, var_list=model.get_params())
+    model_name_dict[model] = 'model_0'
 
     # For the 1...N attack methods, create adv samples and train defence models model_1...model_n
     for attack_name in Settings.attack_type:
@@ -89,10 +91,14 @@ def defence_frame():
     def ensemble_model_probs_unweighted(x):
         return tf.math.log(do_preds(x, model, 'probs', def_model_list=def_model_list))
 
+    # unweighted ensemble: model_0, model_fgsm, model_pgd
     ensemble_model_L_U = CallableModelWrapper(
         ensemble_model_logits_unweighted, 'logits')
+    model_name_dict[ensemble_model_L_U] = 'unweighted logits ensemble model'
+
     ensemble_model_P_U = CallableModelWrapper(
         ensemble_model_probs_unweighted, 'logits')
+    model_name_dict[ensemble_model_P_U] = 'unweighted probs ensemble model'
 
     # Reinforce weighted ensemble model
     if Settings.REINFORE_ENS:
@@ -108,16 +114,30 @@ def defence_frame():
         def ensemble_model_probs(x):
             return tf.math.log(do_preds(x, model, 'probs', def_model_list=probs_ens_def_model_list, detector=probs_detector))
 
-        ensemble_model_L = CallableModelWrapper(
-            ensemble_model_logits, 'logits')
+        def ensemble_model_logits_unweighted_alter(x):
+            return do_preds(x, model, 'logits', def_model_list=logits_ens_def_model_list)
+
+        def ensemble_model_probs_unweighted_alter(x):
+            return tf.math.log(do_preds(x, model, 'probs', def_model_list=probs_ens_def_model_list))
+
+        # weighted ensemble model: model_0, model_fgsm, model_pgd, rein_model_pgd, rein_model_fgsm
+        ensemble_model_L = CallableModelWrapper(ensemble_model_logits, 'logits')
+        model_name_dict[ensemble_model_L] = 'weighted logits ensemble model'
+
         ensemble_model_P = CallableModelWrapper(ensemble_model_probs, 'logits')
+        model_name_dict[ensemble_model_P] = 'weighted probs ensemble model'
+
+        # unweighted ensemble model: model_0, model_fgsm, model_pgd, rein_model_pgd, rein_model_fgsm
+        ensemble_model_L_U_alter = CallableModelWrapper(ensemble_model_logits_unweighted_alter, 'logits')
+        model_name_dict[ensemble_model_L_U_alter] = 'same sized unweighted logits ensemble model'
+
+        ensemble_model_P_U_alter = CallableModelWrapper(ensemble_model_probs_unweighted_alter, 'logits')
+        model_name_dict[ensemble_model_P_U_alter] = 'same sized unweighted probs ensemble model'
 
     else:
-        # Make and train detector that classfies whcih source (clean or adv_1 or adv_2...)
         detector = get_detector('detector_general', len(def_model_list)+1)
         train_detector(sess, detector, attack_dict,
                        Settings.attack_type, X_train)
-        # Make weigthed ensemble model
 
         def ensemble_model_logits(x):
             return do_preds(x, model, 'logits', def_model_list=def_model_list, detector=detector)
@@ -125,15 +145,17 @@ def defence_frame():
         def ensemble_model_probs(x):
             return tf.math.log(do_preds(x, model, 'probs', def_model_list=def_model_list, detector=detector))
 
-        ensemble_model_L = CallableModelWrapper(
-            ensemble_model_logits, 'logits')
+        # weighted ensemble model: model_0, model_fgsm, model_pgd
+        ensemble_model_L = CallableModelWrapper(ensemble_model_logits, 'logits')
+        model_name_dict[ensemble_model_L] = 'weighted logits ensemble model'
+
         ensemble_model_P = CallableModelWrapper(ensemble_model_probs, 'logits')
+        model_name_dict[ensemble_model_P] = 'weighted probs ensemble model'
 
     # Evaluate the accuracy of model on clean examples
     write_exp_summary()
     Settings.fp.write(
         '\n\n=============== Results on clean data ===============\n\n')
-
     print('Evaluating on clean data...')
     do_eval(sess, do_preds(Settings.x, model, 'probs'),
             X_test, Y_test, "origin model on clean data")
@@ -162,14 +184,6 @@ def defence_frame():
                           attack_name + ' ===============\n\n')
         attack_params = get_para(attack_name)
 
-        model_name_dict = {
-            model: 'model_0',
-            ensemble_model_L: 'weighted logits ensemble model',
-            ensemble_model_P: 'weighted probs ensemble model',
-            ensemble_model_L_U: 'unweighted logits ensemble model',
-            ensemble_model_P_U: 'unweighted probs ensemble model'
-        }
-
         def attack_from_to(from_model, to_model_lst):
             from_attack = get_attack(attack_name, from_model, sess)
             adv_x = from_attack.generate(Settings.x, **attack_params)
@@ -178,25 +192,24 @@ def defence_frame():
             if not Settings.REINFORE_ENS:
                 test_detector(sess, detector, adv_x, X_test,
                               (X_test.shape[0], len(Settings.attack_type)+1))
+            else:
+                if from_model in (model, ensemble_model_L, ensemble_model_L_U, ensemble_model_L_U_alter):
+                    Settings.fp.write('Detector logits\n')
+                    test_detector(sess, logits_detector, adv_x, X_test,
+                                  (X_test.shape[0], len(logits_ens_def_model_list)+1))
+                if from_model in (model, ensemble_model_P, ensemble_model_P_U, ensemble_model_P_U_alter):
+                    Settings.fp.write('Detector probs\n')
+                    test_detector(sess, probs_detector, adv_x, X_test,
+                                  (X_test.shape[0], len(probs_ens_def_model_list)+1))
+
+            # eval model accuracy
             for to_model in to_model_lst:
                 start = time.time()
-                # test performance of detector
-                if Settings.REINFORE_ENS:
-                    if to_model in (model, ensemble_model_L, ensemble_model_L_U):
-                        Settings.fp.write('Detector logits\n')
-                        test_detector(sess, logits_detector, adv_x, X_test,
-                                      (X_test.shape[0], len(logits_ens_def_model_list)+1))
-                    if to_model in (model, ensemble_model_P, ensemble_model_P_U):
-                        Settings.fp.write('Detector probs\n')
-                        test_detector(sess, probs_detector, adv_x, X_test,
-                                      (X_test.shape[0], len(probs_ens_def_model_list)+1))
-
                 message = "==ATTACK ON=> " + \
                     model_name_dict[from_model] + \
                     " ==TEST ON=> " + model_name_dict[to_model]
                 do_eval(sess, do_preds(adv_x, to_model, 'probs'), X_test, Y_test,
                         message)
-
                 end = time.time()
                 print('   ' + message + ' Used: ' + str(end - start))
 
@@ -205,17 +218,21 @@ def defence_frame():
         # generate attack to origin model
         attack_from_to(model, [model, ensemble_model_L, ensemble_model_P])
 
-        # generate attack to weighted ensemble model
+        # generate attack from weighted ensemble model
         # logits
-        attack_from_to(ensemble_model_L, [model, ensemble_model_L])
+        attack_from_to(ensemble_model_L, [ensemble_model_L])
         # probs
-        attack_from_to(ensemble_model_P, [model, ensemble_model_P])
+        attack_from_to(ensemble_model_P, [ensemble_model_P])
 
-        # generate attack to unweighted ensemble model
+        # generate attack from unweighted ensemble model
         # logits
-        attack_from_to(ensemble_model_L_U, [model, ensemble_model_L])
+        attack_from_to(ensemble_model_L_U, [ensemble_model_L])
         # probs
-        attack_from_to(ensemble_model_P_U, [model, ensemble_model_P])
+        attack_from_to(ensemble_model_P_U, [ensemble_model_P])
+
+        if Settings.REINFORE_ENS:
+            attack_from_to(ensemble_model_L_U_alter, [ensemble_model_L])
+            attack_from_to(ensemble_model_P_U_alter, [ensemble_model_P])
 
     Settings.fp.close()
 

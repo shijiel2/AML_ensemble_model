@@ -8,25 +8,18 @@ from models.all_cnn import ModelAllConvolutional
 from models.basic_model import ModelBasicCNN
 from models.cifar10_model import make_wresnet
 from models.mnist_model import MadryMNIST
-from models.simple_model import SimpleLinear
-from models.simple_Cifar10 import SimpleCifar10
 from cleverhans.attacks import *
 import datetime
 from sklearn.model_selection import train_test_split
 from cleverhans.loss import CrossEntropy
 from cleverhans.train import train
-from settings import Settings
-
-
 
 """
 **************************** Helper Functions ****************************
 """
 
-def get_model(scope, nb_classes=Settings.nb_classes, nb_filters=Settings.NB_FILTERS, input_shape=Settings.input_shape):
-    dataset = Settings.dataset
-    attack_model = Settings.attack_model
 
+def get_model(dataset, attack_model, scope, nb_classes, nb_filters, input_shape):
     if dataset == 'mnist':
         if attack_model == 'basic_model':
             model = ModelBasicCNN(scope, nb_classes, nb_filters)
@@ -59,9 +52,7 @@ def get_attack(attack_type, model, sess):
     return attack
 
 
-def get_para(attack_type):
-    dataset = Settings.dataset
-
+def get_para(dataset, attack_type):
     if dataset == 'mnist' or 'fmnist':
         attack_params = {'eps': 0.3, 'clip_min': 0., 'clip_max': 1.}
         if attack_type == 'fgsm':
@@ -108,7 +99,7 @@ def get_para(attack_type):
     return attack_params
 
 
-def do_eval(sess, pred, X_test, Y_test, message):
+def do_eval(sess, x, y, pred, X_test, Y_test, message, eval_params, fp=None):
     """
     Compute the accuracy of a TF model on some data
     :param sess: TF session to use
@@ -120,23 +111,17 @@ def do_eval(sess, pred, X_test, Y_test, message):
     :param args: dict or argparse `Namespace` object.
                 Should contain `batch_size`
     """
-    x = Settings.x
-    y = Settings.y
     acc = model_eval(
-        sess, x, y, pred, X_test, Y_test, args=Settings.eval_params)
-    Settings.fp.write(message + '\nAccuracy: %0.4f\n' % acc)
-    print(message + '\nAccuracy: %0.4f\n' % acc)
+        sess, x, y, pred, X_test, Y_test, args=eval_params)
+    if fp != None:
+        fp.write(message + '\nAccuracy: %0.4f\n' % acc)
+    else:
+        print(message + '\nAccuracy: %0.4f\n' % acc)
 
 
-def do_preds(x, model, method, def_model_list=None, detector=None):
+def do_preds(x, model, method, def_model_list=None, detector=None, random=False, k=5, stddev=1.0):
     """
     Return the mean prob of multiple models
-    :param x: input 
-    :param model: model used to make prediction
-    :param method: specify output type 'logits' or 'probs'
-    :param def_model_list: a list of models, used to construct ensemble model, if not provided only use model
-    :param detector: assign different weights to each model in def_model_list, if not provided using same weights
-    :return logits or probs predictions for input x 
     """
     if def_model_list is not None:
         models = [model] + def_model_list
@@ -146,30 +131,22 @@ def do_preds(x, model, method, def_model_list=None, detector=None):
         preds = tf.stack([get_pred(x, m, method) for m in models], 1)
         return tf.reduce_mean(preds, 1)
     else:
-        weights = get_pred(x, detector, 'probs')
+        weights = get_pred(x, detector, 'probs',
+                           random=random, k=k, stddev=stddev)
         preds = tf.stack([get_pred(x, m, method) for m in models], 1)
         preds = tf.math.multiply(preds, weights[:, :, None])
         return tf.reduce_sum(preds, 1)
 
 
-def get_pred(x, model, method):
-    """
-    Wrapper function of get_probs() and get_logtits(), embedding with randomness. If randomness is true in Settings, noises 
-    will be added to the input x to construct k different inputs, the output is the reduce mean of their outputs. 
-    :param x: input 
-    :param model: model used to make prediction
-    :param method: specify output type 'logits' or 'probs'
-    :return logits or probs predictions for input x 
-    """
+def get_pred(x, model, method, random=False, k=5, stddev=1.0):
     if method == 'probs':
-        if not Settings.PRED_RANDOM:
+        if not random:
             return model.get_probs(x)
         else:
             probs = []
-            for _ in range(Settings.RANDOM_K):
+            for _ in range(k):
                 new_x = x + \
-                    tf.random.normal(tf.shape(x), dtype=x.dtype,
-                                     stddev=Settings.RANDOM_STDDEV)
+                    tf.random.normal(tf.shape(x), dtype=x.dtype, stddev=stddev)
                 probs.append(model.get_probs(new_x))
             return tf.reduce_mean(tf.stack(probs, 0), 0)
 
@@ -177,16 +154,17 @@ def get_pred(x, model, method):
         return model.get_logits(x)
 
 
-def do_sess_batched_eval(sess, x_gen, X_in, X_out_shape):
+def do_sess_batched_eval(sess, x, x_gen, X_in, X_out_shape, args=None):
     """
     Apply gen to ndarray, and return a new ndarray.
     :param sess: TF session to use
-    :prarm x: placeholder for data in X_in
     :param x_gen: generator feed with placeholder, eg. attack(x)
     :param X_in: numpy array with inputs
+    :param args: dict or argparse `Namespace` object.
+                 Should contain `batch_size`
     :return: ndarry with same shape 
     """
-    args = _ArgsWrapper(Settings.eval_params or {})
+    args = _ArgsWrapper(args or {})
     assert args.batch_size, "Batch size was not given in args dict"
     if X_in is None:
         raise ValueError("X_in argument must be supplied.")
@@ -201,7 +179,7 @@ def do_sess_batched_eval(sess, x_gen, X_in, X_out_shape):
         for batch in tqdm(range(nb_batches)):
             start = batch * args.batch_size
             end = min(len(X_in), start + args.batch_size)
-            feed_dict = {Settings.x: X_in[start:end]}
+            feed_dict = {x: X_in[start:end]}
             X_out[start:end] = x_gen.eval(feed_dict=feed_dict)
 
         assert end >= len(X_in)
@@ -209,10 +187,11 @@ def do_sess_batched_eval(sess, x_gen, X_in, X_out_shape):
     return X_out
 
 
-def get_merged_train_data(sess, attack_dict, attack_types, X_train):
+def get_merged_train_data(sess, x, attack_dict, X_train, eval_params, attack_types):
     """
     Construct the merged data for trainning the classifier
     :param sess: current session
+    :param x: placeholder for trainning data
     :param attack_dict: dictionary {attack_name: attack_generator}
     :param X_train: ndarray 
     :return: X_merged, Y_merged 
@@ -225,7 +204,7 @@ def get_merged_train_data(sess, attack_dict, attack_types, X_train):
     for i, attack_name in enumerate(attack_types):
         # generate adversrial X
         X_train_adv = do_sess_batched_eval(
-            sess, attack_dict[attack_name](Settings.x), X_train, X_train.shape)
+            sess, x, attack_dict[attack_name](x), X_train, X_train.shape, args=eval_params)
         # constructe Y
         Y_train_adv = np.zeros((X_train.shape[0], len(attack_types) + 1))
         Y_train_adv[:, i+1] = np.ones(X_train.shape[0])
@@ -235,125 +214,67 @@ def get_merged_train_data(sess, attack_dict, attack_types, X_train):
 
     return X_merged, Y_merged
 
-
-def get_detector(name, width):
-    """
-    Fetch the corresponding detector.
-    :param name: name of the detector 
-    :param width: how many catagories the detector could classify
-    :return: detector
-    """
-
-    if Settings.dataset == 'mnist':
-        if not Settings.LINEAR_DETECTOR:
-            detector = ModelBasicCNN(name, width, Settings.NB_FILTERS)
-        else:
-            detector = SimpleLinear(name, width, Settings.NB_FILTERS)
-    
-    elif Settings.dataset == 'cifar10':
-        if not Settings.LINEAR_DETECTOR:
-            detector = ModelAllConvolutional(name, width, Settings.NB_FILTERS, input_shape=Settings.input_shape)
-        else:
-            detector = SimpleCifar10(name, width, Settings.NB_FILTERS, input_shape=Settings.input_shape)
-    
-    return detector
-
-
-def test_detector(sess, detector, x_in, X_test, X_out_shape):
-    """
-    Test the performance of detector by reproducing the weights it assigned in each adv examples.
-    :param sess: current session
-    :param detector: the detector to be tested
-    :param x_in: the adv examples
-    :param X_test: ndarray stroing actual data
-    :param X_out_shape: shape of output ndarray
-    """
-    det_probs = get_pred(x_in, detector, 'probs')
+def test_detector(sess, x, detector, x_in, X_test, X_out_shape, args, fp=None, random=False, k=5, stddev=1.0):
+    det_probs = get_pred(x_in, detector, 'probs',
+                         random=random, k=k, stddev=stddev)
     Probs = do_sess_batched_eval(
-        sess, det_probs, X_test, X_out_shape)
+        sess, x, det_probs, X_test, X_out_shape, args=args)
 
     Preds = np.argmax(Probs, axis=1)
     unique, counts = np.unique(Preds, return_counts=True)
 
-    Settings.fp.write('detector mean probs:' +
-                      str(np.mean(Probs, axis=0)) + '\n')
-    Settings.fp.write('detector preds counts:' +
-                      str(dict(zip(unique, counts))) + '\n')
+    if fp is not None:
+        fp.write('detector mean probs:' + str(np.mean(Probs, axis=0)) + '\n')
+        fp.write('detector preds counts:' +
+                 str(dict(zip(unique, counts))) + '\n')
+    else:
+        print('detector mean probs:' + str(np.mean(Probs, axis=0)) + '\n')
+        print('detector preds counts:' + str(dict(zip(unique, counts))))
 
-    print('detector mean probs:' + str(np.mean(Probs, axis=0)) + '\n')
-    print('detector preds counts:' + str(dict(zip(unique, counts))))
 
-def train_detector(sess, detector, attack_dict, attack_types, X_train):
-    """
-    Train a detector and return it.
-    :param sess: current session
-    :param x: placeholder for trainning data
-    :param detector: the detector
-    :param attack_dict: dictionary {attack_name: attack_generator}
-    :param attack_types: list of attacks it need to be detect
-    :param X_train: ndarray 
-    """
+def train_detector(sess, x, name, attack_dict, X_train, eval_params, attack_types, dataset, nb_filters, input_shape, label_smoothing, train_params, rng, eval_detector):
     # Make and train detector that classfies whcih source (clean or adv_1 or adv_2...)
     # prepare data
     print('Preparing merged data...')
     X_merged, Y_merged = get_merged_train_data(
-        sess, attack_dict, attack_types, X_train)
+        sess, x, attack_dict, X_train, eval_params, attack_types)
+    # train the detector
+    if dataset == 'mnist':
+        detector = ModelBasicCNN(
+            'detector_'+name, (len(attack_types) + 1), nb_filters)
+    elif dataset == 'cifar10':
+        detector = ModelAllConvolutional(
+            'detector_'+name, (len(attack_types) + 1), nb_filters, input_shape=input_shape)
 
-    loss_d = CrossEntropy(detector, smoothing=Settings.LABEL_SMOOTHING)
+    loss_d = CrossEntropy(detector, smoothing=label_smoothing)
     print('Train detector with X_merged and Y_merged shape:',
           X_merged.shape, Y_merged.shape)
 
-    train(sess, loss_d, X_merged, Y_merged,
-            args=Settings.train_params, rng=Settings.rng, var_list=detector.get_params())
+    # eval detector
+    if eval_detector:
+        X_merged_train, X_merged_test, Y_merged_train, Y_merged_test = train_test_split(
+            X_merged, Y_merged, test_size=0.20, random_state=42)
+        train(sess, loss_d, X_merged_train, Y_merged_train,
+              args=train_params, rng=rng, var_list=detector.get_params())
+        do_eval(sess, x, tf.placeholder(tf.float32, shape=(None, (len(attack_types) + 1))),
+                do_preds(x, detector, 'probs'), X_merged_test, Y_merged_test, 'Detector accuracy', eval_params)
+    else:
+        train(sess, loss_d, X_merged, Y_merged,
+              args=train_params, rng=rng, var_list=detector.get_params())
 
     return detector
 
-def get_attack_fun(from_model, attack_name, sess):
-    attack_params = get_para(attack_name)
-    attack_method = get_attack(attack_name, from_model, sess)
-    def attack(x):
-        return attack_method.generate(x, **attack_params)
-    return attack
 
-def train_defence_model(sess, model_i, from_model, attack_name, X_train, Y_train):
-    
-    attack = get_attack_fun(from_model, attack_name, sess)
-    loss_i = CrossEntropy(
-            model_i, smoothing=Settings.LABEL_SMOOTHING, attack=attack, adv_coeff=1.)
-
-    print('Trainnig model:', attack_name)
-    train(sess, loss_i, X_train, Y_train,
-            args=Settings.train_params, rng=Settings.rng, var_list=model_i.get_params())
-
-def reinfrocement_ensemble_gen(sess, name, from_model, def_model_list, attack_dict, X_train, Y_train):
-    rein_def_model_list = def_model_list.copy()
-
-    for attack_name in Settings.REINFORE_ENS:
-        model_i = get_model(name + '_rein_def_model_' + attack_name)
-        train_defence_model(sess, model_i, from_model, attack_name, X_train, Y_train)
-        
-        rein_def_model_list.append(model_i)
-        attack_dict[str(name + attack_name)] = get_attack_fun(from_model, attack_name, sess)
-
-    rein_attack_types = Settings.attack_type + [str(name + a) for a in Settings.REINFORE_ENS]
-    rein_detector = get_detector('rein_detector_'+name, len(rein_def_model_list)+1)
-    train_detector(sess, rein_detector, attack_dict, rein_attack_types, X_train)
-
-    return rein_def_model_list, rein_detector
-    
-
-def write_exp_summary():
-    fp = Settings.fp
+def write_exp_summary(fp, flags, is_online, pred_random, k, stddev, reinforcement_ens):
     string = 'Experiment for AML project.\n' + \
              'Date: ' + str(datetime.datetime.now()) + '\n\n' + \
-             'Dataset: ' + Settings.dataset + '\n' + \
-             'Attack types: ' + str(Settings.attack_type) + '\n' + \
-             'Model type: ' + str(Settings.attack_model) + '\n' + \
-             'Is Online: ' + str(Settings.IS_ONLINE) + '\n' + \
-             'Randomness in prediction: ' + str(Settings.PRED_RANDOM) + '\n' + \
-             'Random K: ' + str(Settings.RANDOM_K) + '\n' + \
-             'Stddev: ' + str(Settings.RANDOM_STDDEV) + '\n' + \
-             'Ensemble reinforcement: ' + str(Settings.REINFORE_ENS) + '\n' + \
-             'Linear detector: ' + str(Settings.LINEAR_DETECTOR) + '\n' + \
+             'Dataset: ' + flags.dataset + '\n' + \
+             'Attack types: ' + str(flags.attack_type) + '\n' + \
+             'Model type: ' + str(flags.attack_model) + '\n' + \
+             'Is Online: ' + str(is_online) + '\n' + \
+             'Randomness in prediction: ' + str(pred_random) + '\n' + \
+             'Random K: ' + str(k) + '\n' + \
+             'Stddev: ' + str(stddev) + '\n' + \
+             'Ensemble reinforcement: ' + str(reinforcement_ens) + '\n' + \
              '\n\n'
     fp.write(string)

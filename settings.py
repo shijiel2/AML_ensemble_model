@@ -6,7 +6,7 @@ from cleverhans.dataset import CIFAR10
 class Settings:
     
     # constants
-    NB_EPOCHS = 1
+    NB_EPOCHS = 6
     BATCH_SIZE = 128
     LEARNING_RATE = 0.001
     NB_FILTERS = 64
@@ -35,17 +35,17 @@ class Settings:
     cifar10_model -> model for cifar10
     mnist_model -> model for mnist
     """
-    attack_type = ['fgsm'] 
+    attack_type = ['fgsm', 'pgd'] 
     dataset = 'mnist' 
     attack_model = 'basic_model'
     
     # advanced settings 
     REINFORE_ENS = []
-    EVAL_DETECTOR = False
     PRED_RANDOM = False
     RANDOM_K = 3
     RANDOM_STDDEV = 0.1
-    IS_ONLINE = False
+    IS_ONLINE = True
+    LINEAR_DETECTOR = True
 
 
     # static varibales 
