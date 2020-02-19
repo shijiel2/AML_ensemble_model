@@ -34,7 +34,7 @@ from models.cifar10_model import make_wresnet
 from models.mnist_model import MadryMNIST
 from models.simple_model import SimpleLinear
 from sklearn.model_selection import train_test_split
-from get_model import *
+from generate import *
 
 FLAGS = flags.FLAGS
 
@@ -47,9 +47,13 @@ BACKPROP_THROUGH_ATTACK = False
 NB_FILTERS = 64
 TRAIN_SIZE = 60000
 TEST_SIZE = 10000
-IS_ONLINE = True
+IS_ONLINE = False
 CHECK_DET = False
 NOISE = True
+NOISE_NB = 5
+NOISE_STD = 0.1
+ENS_IN_WEI = True
+ENS_PL = 'probs'
 
 
 def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
@@ -159,18 +163,6 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
         adv_x[attack_name] = attack(x)
 
 
-    '''
-    --------------- weighted class train --------------
-    '''
-
-    # define and train attack detector model
-    new_nb_classes = len(adv_x)
-    # build a CNN model for the detector
-    # det_model = ModelBasicCNN('detector', new_nb_classes, nb_filters)
-
-    # build a simple linear model for the detector
-    det_model = SimpleLinear('detector', new_nb_classes, nb_filters)
-    train_attack_detector(sess,x,det_model,adv_x, X_train, Y_train, train_params_det, rng)
 
     '''
     ----------------- create ens model ---------------
@@ -185,20 +177,94 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
     ensemble_model_P = CallableModelWrapper(ensemble_model_probs, 'logits')
 
 
+    '''
+    ----------------- new model from ens model ---------------
+    '''
+    def_model_list2 = def_model_list.copy()
+    if ENS_PL == 'probs':
+        ens_model = ensemble_model_P
+    elif ENS_PL == 'logits':
+        ens_model = ensemble_model_L
+    if ENS_IN_WEI == True:
+        ens_attacks = ['fgsm','pgd']
+        # create adv from ens model and train new defence models
+        for i, attack_name in enumerate(ens_attacks):
+            attack_params = get_para(FLAGS.dataset, attack_name)
+            ens_i = get_model(FLAGS.dataset, FLAGS.attack_model,
+                                'ens_'+str(i), nb_classes, nb_filters, input_shape)
+            
+            attack_method = get_attack(attack_name, ens_model, sess)
+            
+            def attack(x):
+                return attack_method.generate(x, **attack_params)
+                
+            loss_ens_i = CrossEntropy(
+                ens_i, smoothing=label_smoothing, attack=attack, adv_coeff=1.)
+            train(sess, loss_ens_i, X_train, Y_train,
+                  args=train_params, rng=rng, var_list=ens_i.get_params())
+
+            def_model_list2.append(ens_i)
+            adv_x['ens'+attack_name] = attack(x)
+
+    
+    '''
+    --------------- weighted class train --------------
+    '''
+
+    # define and train attack detector model
+    new_nb_classes = len(adv_x)
+    if FLAGS.dataset == 'mnist':
+        # build a CNN model for the detector
+        # det_model = ModelBasicCNN('detector', new_nb_classes, nb_filters)
+
+        # build a simple linear model for the detector
+        det_model = SimpleLinear('detector', new_nb_classes, nb_filters)
+    else:
+        # build a simple linear model for the detector
+        det_model = SimpleCifar10('detector', new_nb_classes, nb_filters, input_shape=input_shape)
+    
+    train_attack_detector(sess, x, det_model, adv_x, X_train, Y_train, train_params_det, rng)
+
+
+    '''
+    --------------------- unweighted and weighted ens_model based on -------------------
+    '''
+    if ENS_IN_WEI == True:
+        def ens_model_logits_2(x):
+            return do_logits(x, model, def_model_list=def_model_list2)
+        def ens_model_probs_2(x):
+            return tf.math.log(do_probs(x, model, def_model_list=def_model_list2))
+
+        ens_model_2_L = CallableModelWrapper(ens_model_logits_2, 'logits')
+        ens_model_2_P = CallableModelWrapper(ens_model_probs_2, 'logits')
+
+
     # Make Ensemble model
     def weighted_ensemble_model_logits(x):
-        return do_logits(x, model,det_model, def_model_list=def_model_list)
+        return do_logits(x, model,det_model, def_model_list=def_model_list2)
     def weighted_ensemble_model_probs(x):
-        return tf.math.log(do_probs(x, model,det_model, def_model_list=def_model_list))
+        return tf.math.log(do_probs(x, model,det_model, def_model_list=def_model_list2))
 
     weighted_ensemble_model_L = CallableModelWrapper(weighted_ensemble_model_logits, 'logits')
     weighted_ensemble_model_P = CallableModelWrapper(weighted_ensemble_model_probs, 'logits')
 
 
+    
     '''
     ----------------- model eval ----------------
     '''
+    
+    print('dataset:',FLAGS.dataset)
+    print('model:',FLAGS.attack_model)
+    print('attacks:',FLAGS.attack_type)
+    print('ensembel models:',ens_attacks)
+    print('online:',IS_ONLINE)
+    print('noise:',NOISE)
+    print('ens in weighted:',ENS_IN_WEI)
+    print('ens in weighted based on:',ENS_PL)
+
     # Evaluate the accuracy of model on clean examples
+    print('----------- clean examples ----------')
     with sess.as_default():
         print(tf.reduce_mean(det_model.get_probs(x),0).eval(feed_dict={x:X_test}))
     do_eval(sess, x, y, do_probs(x, model), 
@@ -218,6 +284,7 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
 
         '''---------------------origin model case----------------------'''
         # generate attack to origin model
+        print('----------- on model0 ----------')
         origin_attack = get_attack(attack_name, model, sess)
         origin_adv_x = origin_attack.generate(x, **attack_params)
         
@@ -240,6 +307,7 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
         '''---------------------online model case----------------------'''     
         if IS_ONLINE == True:
             # modeli
+            print('----------- on online model ----------')
             modeli_attack = get_attack(attack_name, def_model_list[i], sess)
             modeli_adv_x = modeli_attack.generate(x, **attack_params)
 
@@ -260,6 +328,7 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
                             
         '''---------------------ensemble model case----------------------'''
         # generate attack from un-w ensemble model attack wgted, based on probs
+        print('----------- on ensembel model ----------')
         print('based on probs')
         ensemble_attack_P = get_attack(attack_name, ensemble_model_P, sess)
         ensemble_adv_x_P = ensemble_attack_P.generate(x, **attack_params)
@@ -283,11 +352,17 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
             X_test, Y_test, attack_name + "-> weighted_ensemble model, test on weighted_ensemble model", eval_params)       
         do_eval(sess, x, y, do_probs(ensemble_adv_x_P, weighted_ensemble_model_P), 
             X_test, Y_test, attack_name + "-> from unweighted, on weighted", eval_params)
-
+        
+        if ENS_IN_WEI == True:
+            ens_attack_2_P = get_attack(attack_name, ens_model_2_P, sess)
+            ens_adv_x_2_P = ens_attack_2_P.generate(x, **attack_params)            
+            do_eval(sess, x, y, do_probs(ens_adv_x_2_P, weighted_ensemble_model_P), 
+                X_test, Y_test, attack_name + "-> from new unweighted, on weighted", eval_params)
+            
         # generate attack from un-w ensemble model attack wgted, based on logits
         print('based on logits')
         ensemble_attack_L = get_attack(attack_name, ensemble_model_L, sess)
-        ensemble_adv_x_L = ensemble_attack_P.generate(x, **attack_params)
+        ensemble_adv_x_L = ensemble_attack_L.generate(x, **attack_params)
         weighted_ensemble_attack_L = get_attack(attack_name, weighted_ensemble_model_L, sess)
         weighted_ensemble_adv_x_L = weighted_ensemble_attack_L.generate(x, **attack_params)
 
@@ -301,6 +376,12 @@ def defence_frame(train_start=0, train_end=TRAIN_SIZE, test_start=0,
             X_test, Y_test, attack_name + "-> weighted_ensemble model, test on weighted_ensemble model", eval_params)       
         do_eval(sess, x, y, do_probs(ensemble_adv_x_L, weighted_ensemble_model_L),
                 X_test, Y_test, attack_name + "-> from unweighted, on weighted", eval_params)
+        
+        if ENS_IN_WEI == True:
+            ens_attack_2_L = get_attack(attack_name, ens_model_2_L, sess)
+            ens_adv_x_2_L = ens_attack_2_L.generate(x, **attack_params)            
+            do_eval(sess, x, y, do_probs(ens_adv_x_2_L, weighted_ensemble_model_L), 
+                X_test, Y_test, attack_name + "-> from new unweighted, on weighted", eval_params) 
 
 '''
 ------------ help function ---------------
@@ -389,11 +470,11 @@ def do_logits(x, model, detector=None, def_model_list=None):
         return tf.reduce_sum(preds, 1)
 
 def do_det_noise(detector,x):
-    nb_noise = 5
+    nb_noise = NOISE_NB
     noise_x = []
     for i in range(nb_noise):
         noise_x.append(x+tf.random_normal(shape = tf.shape(x), 
-                                mean=0.0, stddev=0.1, dtype=tf.float32))
+                                mean=0.0, stddev=NOISE_STD, dtype=tf.float32))
     det = tf.stack([detector.get_probs(noi) for noi in noise_x], 0)
     return tf.reduce_mean(det, 0)
 
