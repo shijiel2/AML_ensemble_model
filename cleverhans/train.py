@@ -18,6 +18,7 @@ import logging
 import os
 import time
 import warnings
+import random
 
 import math
 import numpy as np
@@ -387,7 +388,6 @@ def train_ftramer(sess, loss, x_train, y_train, attack_dict,
       # stochastic preprocessing could make the canary fail.
       preprocessed_xs.append(x)
       
-      import random
       attack = random.choice(list(attack_dict.values()))
       loss_value_1 = loss.fprop(x, y, **fprop_args)
       loss_value_2 = loss.fprop(attack(x), y, **fprop_args)

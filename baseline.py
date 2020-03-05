@@ -40,19 +40,15 @@ def defence_frame():
     tf.set_random_seed(1234)
 
     # Set logging level to see debug information
-    set_log_level(logging.ERROR)
+    set_log_level(logging.INFO)
 
     # Create TF session
     sess = tf.Session(config=tf.ConfigProto(**Settings.config_args))
 
-    # list of model_1...model_n
-    def_model_list = []
     # dict of attack_name -> attack function
     attack_dict = {}
     # dict of model names
     model_name_dict = {}
-    # ftramer baseline attack list
-    ftramer_attacks = []
 
     # Dataset for quick access
     X_train = Settings.X_train
@@ -65,6 +61,8 @@ def defence_frame():
     """
 
     # Define and train model (aka model_0)
+    
+    # assert offline
     model = get_model('model')
     loss = CrossEntropy(model, smoothing=Settings.LABEL_SMOOTHING)
     print('Train clean model_0')
@@ -74,18 +72,9 @@ def defence_frame():
 
     # For the 1...N attack methods, create adv samples and train defence models model_1...model_n
     for attack_name in Settings.attack_type:
-        model_i = get_model('basic_def_model_' + attack_name)
-        if Settings.IS_ONLINE:
-            from_model = model_i
-        else:
-            from_model = model
-        train_defence_model(sess, model_i, from_model,
-                            attack_name, X_train, Y_train)
-
+        from_model = model
         attack_dict[attack_name] = get_attack_fun(
             from_model, attack_name, sess)
-        def_model_list.append(model_i)
-        ftramer_attacks.append(get_attack(attack_name, from_model, sess))
 
     # Make baseline: ftramer ensemble model
     ftramer_model = get_model('ftramer_model')

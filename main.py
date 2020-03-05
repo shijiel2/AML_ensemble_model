@@ -51,8 +51,6 @@ def defence_frame():
     attack_dict = {}
     # dict of model names
     model_name_dict = {}
-    # ftramer baseline attack list
-    ftramer_attacks = []
 
     # Dataset for quick access
     X_train = Settings.X_train
@@ -85,7 +83,6 @@ def defence_frame():
         attack_dict[attack_name] = get_attack_fun(
             from_model, attack_name, sess)
         def_model_list.append(model_i)
-        ftramer_attacks.append(get_attack(attack_name, from_model, sess))
 
     # Make baseline: ftramer ensemble model
     ftramer_model = get_model('ftramer_model')
