@@ -15,7 +15,7 @@ from tqdm import tqdm
 import tensorflow as tf
 from tensorflow.python.platform import app
 from tensorflow.python.platform import flags
-from cleverhans.train import train
+from cleverhans.train import train, train_ftramer
 from cleverhans.utils_mnist import data_mnist
 from cleverhans.dataset import CIFAR10
 from cleverhans.model import CallableModelWrapper
@@ -40,7 +40,7 @@ def defence_frame():
     tf.set_random_seed(1234)
 
     # Set logging level to see debug information
-    set_log_level(logging.INFO)
+    set_log_level(logging.ERROR)
 
     # Create TF session
     sess = tf.Session(config=tf.ConfigProto(**Settings.config_args))
@@ -51,6 +51,8 @@ def defence_frame():
     attack_dict = {}
     # dict of model names
     model_name_dict = {}
+    # ftramer baseline attack list
+    ftramer_attacks = []
 
     # Dataset for quick access
     X_train = Settings.X_train
@@ -83,6 +85,14 @@ def defence_frame():
         attack_dict[attack_name] = get_attack_fun(
             from_model, attack_name, sess)
         def_model_list.append(model_i)
+        ftramer_attacks.append(get_attack(attack_name, from_model, sess))
+
+    # Make baseline: ftramer ensemble model
+    ftramer_model = get_model('ftramer_model')
+    ftramer_loss = CrossEntropy(ftramer_model, smoothing=Settings.LABEL_SMOOTHING)
+    train_ftramer(sess, ftramer_loss, X_train, Y_train, attack_dict,
+                  args=Settings.train_params, rng=Settings.rng, var_list=ftramer_model.get_params())
+    model_name_dict[ftramer_model] = 'ftramer ensemble model'
 
     # Make unweighted Ensemble model
     def ensemble_model_logits_unweighted(x):
@@ -92,12 +102,10 @@ def defence_frame():
         return tf.math.log(do_preds(x, model, 'probs', def_model_list=def_model_list))
 
     # unweighted ensemble: model_0, model_fgsm, model_pgd
-    ensemble_model_L_U = CallableModelWrapper(
-        ensemble_model_logits_unweighted, 'logits')
+    ensemble_model_L_U = CallableModelWrapper(ensemble_model_logits_unweighted, 'logits')
     model_name_dict[ensemble_model_L_U] = 'unweighted logits ensemble model'
 
-    ensemble_model_P_U = CallableModelWrapper(
-        ensemble_model_probs_unweighted, 'logits')
+    ensemble_model_P_U = CallableModelWrapper(ensemble_model_probs_unweighted, 'logits')
     model_name_dict[ensemble_model_P_U] = 'unweighted probs ensemble model'
 
     # Reinforce weighted ensemble model
@@ -163,6 +171,8 @@ def defence_frame():
             X_test, Y_test, "probs ensemble model on clean data")
     do_eval(sess, do_preds(Settings.x, ensemble_model_L, 'probs'),
             X_test, Y_test, "logits ensemble model on clean data")
+    do_eval(sess, do_preds(Settings.x, ftramer_model, 'probs'),
+            X_test, Y_test, "ftramer ensemble model on clean data")
 
     # test performance of detector
     if Settings.REINFORE_ENS:
@@ -216,7 +226,7 @@ def defence_frame():
             Settings.fp.write('\n')
 
         # generate attack to origin model
-        attack_from_to(model, [model, ensemble_model_L, ensemble_model_P])
+        attack_from_to(model, [model, ensemble_model_L, ensemble_model_P, ftramer_model])
 
         # generate attack from weighted ensemble model
         # logits
