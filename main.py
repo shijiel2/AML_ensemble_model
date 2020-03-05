@@ -227,6 +227,7 @@ def defence_frame():
 
         # generate attack to origin model
         attack_from_to(model, [model, ensemble_model_L, ensemble_model_P, ftramer_model])
+        attack_from_to(ftramer_model, [ftramer_model])
 
         # generate attack from weighted ensemble model
         # logits
