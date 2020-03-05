@@ -168,7 +168,7 @@ class Factory(object):
 
 def maybe_download_file(url, datadir=None, force=False):
   try:
-    from urllib.request import urlretrieve
+    from urllib.request import urlretrieve, build_opener, install_opener
   except ImportError:
     from urllib import urlretrieve
 
@@ -180,6 +180,9 @@ def maybe_download_file(url, datadir=None, force=False):
   isfile = os.path.isfile(dest_file)
 
   if force or not isfile:
+    opener = build_opener()
+    opener.addheaders=[('User-Agent','Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/36.0.1941.0 Safari/537.36')]
+    install_opener(opener)
     urlretrieve(url, dest_file)
   return dest_file
 

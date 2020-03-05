@@ -40,7 +40,7 @@ def defence_frame():
     tf.set_random_seed(1234)
 
     # Set logging level to see debug information
-    set_log_level(logging.ERROR)
+    set_log_level(logging.INFO)
 
     # Create TF session
     sess = tf.Session(config=tf.ConfigProto(**Settings.config_args))
