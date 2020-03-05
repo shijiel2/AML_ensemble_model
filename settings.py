@@ -35,7 +35,7 @@ class Settings:
     cifar10_model -> model for cifar10
     mnist_model -> model for mnist
     """
-    attack_type = ['fgsm', 'pgd'] 
+    attack_type = ['fgsm'] 
     dataset = 'mnist' 
     attack_model = 'basic_model'
     
@@ -45,7 +45,7 @@ class Settings:
     RANDOM_K = 3
     RANDOM_STDDEV = 0.1
     IS_ONLINE = True
-    LINEAR_DETECTOR = True
+    LINEAR_DETECTOR = False
 
 
     # static varibales 
