@@ -13,7 +13,7 @@ from keras_wraper_ensemble import KerasModelWrapper
 
 
 # Subtracting pixel mean improves accuracy
-subtract_pixel_mean = True
+subtract_pixel_mean = False
 
 # Computed depth from supplied model parameter n
 n = 5

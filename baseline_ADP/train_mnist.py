@@ -13,7 +13,7 @@ from keras.datasets import mnist
 import tensorflow as tf
 import numpy as np
 import os
-from model import resnet_v1
+from model import resnet_v1, basic_cnn_model
 from utils import *
 
 
@@ -75,12 +75,31 @@ def lr_schedule(epoch):
     print('Learning rate: ', lr)
     return lr
 
-model_input = Input(shape=input_shape)
 
+# add model_0
+model_0_input = Input(shape=input_shape)
+model_0_output = basic_cnn_model(input=model_0_input, depth=depth, num_classes=num_classes, dataset=FLAGS.dataset)[2]
+model_0 = Model(input=model_0_input, output=model_0_output)
+model_0.compile(
+        loss='categorical_crossentropy',
+        optimizer=Adam(lr=lr_schedule(0)),
+        metrics=['accuracy'])
+model_0.summary()
+model_0.fit(
+        x_train, y_train,
+        batch_size=FLAGS.batch_size,
+        epochs=epochs,
+        validation_data=(x_test, y_test),
+        shuffle=True,
+        verbose=1)
+
+
+model_input = Input(shape=input_shape)
 model_dic = {}
 model_out = []
 for i in range(FLAGS.num_models):
-    model_dic[str(i)] = resnet_v1(input=model_input, depth=depth, num_classes=num_classes, dataset=FLAGS.dataset)
+    model_dic[str(i)] = basic_cnn_model(input=model_input, depth=depth, num_classes=num_classes, dataset=FLAGS.dataset)
+    model_dic[str(i)][0].set_weights(model_0.get_weights())
     model_out.append(model_dic[str(i)][2])
 
 model_output = keras.layers.concatenate(model_out)
