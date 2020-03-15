@@ -15,6 +15,9 @@ import numpy as np
 import os
 from model import resnet_v1, basic_cnn_model
 from utils import *
+from keras_wraper_ensemble import KerasModelWrapper
+import cleverhans.attacks as attacks
+from cleverhans.utils_tf import model_eval
 
 
 # Training parameters
@@ -58,6 +61,14 @@ print('y_train shape:', y_train.shape)
 y_train = keras.utils.to_categorical(y_train, num_classes)
 y_test = keras.utils.to_categorical(y_test, num_classes)
 
+
+# Define input TF placeholder
+x = tf.placeholder(tf.float32, shape=(None, 28, 28, 1))
+y = tf.placeholder(tf.float32, shape=(None, num_classes))
+sess = tf.Session()
+keras.backend.set_session(sess)
+
+
 def lr_schedule(epoch):
     """Learning Rate Schedule
     Learning rate is scheduled to be reduced after 80, 120, 160, 180 epochs.
@@ -80,6 +91,8 @@ def lr_schedule(epoch):
 model_0_input = Input(shape=input_shape)
 model_0_output = basic_cnn_model(input=model_0_input, depth=depth, num_classes=num_classes, dataset=FLAGS.dataset)[2]
 model_0 = Model(input=model_0_input, output=model_0_output)
+wrap_model_0 = KerasModelWrapper(model_0)
+
 model_0.compile(
         loss='categorical_crossentropy',
         optimizer=Adam(lr=lr_schedule(0)),
@@ -103,8 +116,10 @@ for i in range(FLAGS.num_models):
     model_out.append(model_dic[str(i)][2])
 
 model_output = keras.layers.concatenate(model_out)
-
 model = Model(input=model_input, output=model_output)
+model_ensemble = keras.layers.Average()(model_out)
+model_ensemble = Model(input=model_input, output=model_ensemble)
+wrap_model_ensemble = KerasModelWrapper(model_ensemble)
 
 model.compile(
         loss=Loss_withEE_DPP,
@@ -210,3 +225,23 @@ else:
         verbose=1,
         workers=4,
         callbacks=callbacks)
+
+
+def attak_from_to(from_model, to_model, message):
+    fgsm = attacks.FastGradientMethod(from_model)
+    pgd = attacks.ProjectedGradientDescent(from_model)
+    # Consider the attack to be constant
+    eval_par = {'batch_size': 128}
+    fgsm_par = {'eps': 0.3, 'clip_min': 0., 'clip_max': 1.}
+    pgd_par = {'eps': 0.3, 'clip_min': 0., 'clip_max': 1., 'eps_iter': 0.05, 'nb_iter': 20}
+
+    for att, att_params, att_name in zip([fgsm, pgd], [fgsm_par, pgd_par], ['fgsm', 'pgd']):
+        adv_x = tf.stop_gradient(att.generate(x, **att_params))
+        preds = to_model(adv_x)
+        acc = model_eval(sess, x, y, preds, x_test, y_test, args=eval_par)
+        print(message, att_name, 'adv acc:', acc)
+
+attak_from_to(wrap_model_0, model_0, 'model_0 => model_0')
+attak_from_to(wrap_model_0, model_ensemble, 'model_0 => ensemble')
+attak_from_to(wrap_model_ensemble, model_ensemble, 'ensemble => ensemble')
+
