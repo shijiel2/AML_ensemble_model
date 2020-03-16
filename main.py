@@ -185,7 +185,7 @@ def defence_frame():
         def attack_from_to(from_model, to_model_lst):
             from_attack = get_attack(attack_name, from_model, sess)
             if attack_name == 'spsa':
-                adv_x = from_attack.generate(Settings.x, y=tf.math.argmax(do_preds(Settings.x, from_model, 'probs')), **attack_params)
+                adv_x = from_attack.generate(Settings.x, y=Settings.y, **attack_params)
             else: 
                 adv_x = from_attack.generate(Settings.x, **attack_params)
 
@@ -209,8 +209,10 @@ def defence_frame():
                 message = "==ATTACK ON=> " + \
                     model_name_dict[from_model] + \
                     " ==TEST ON=> " + model_name_dict[to_model]
-                do_eval(sess, do_preds(adv_x, to_model, 'probs'), X_test, Y_test,
-                        message)
+                if attack_name == 'spsa':
+                    do_eval(sess, do_preds(adv_x, to_model, 'probs'), X_test, Y_test, message, args={'batch_size': 1})
+                else:
+                    do_eval(sess, do_preds(adv_x, to_model, 'probs'), X_test, Y_test, message)
                 end = time.time()
                 print('   ' + message + ' Used: ' + str(end - start))
 

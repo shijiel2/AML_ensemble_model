@@ -69,7 +69,7 @@ def get_para(attack_type):
         if attack_type == 'fgsm':
             attack_params = attack_params
         elif attack_type == 'spsa':
-            attack_params.update({'nb_iter': 100, 'spsa_samples': 128})
+            attack_params.update({'nb_iter': 100})
         elif attack_type == 'bim':
             attack_params.update({'nb_iter': 50, 'eps_iter': .01})
         elif attack_type == 'pgd':
@@ -112,7 +112,7 @@ def get_para(attack_type):
     return attack_params
 
 
-def do_eval(sess, pred, X_test, Y_test, message):
+def do_eval(sess, pred, X_test, Y_test, message, args=Settings.eval_params):
     """
     Compute the accuracy of a TF model on some data
     :param sess: TF session to use
@@ -127,7 +127,7 @@ def do_eval(sess, pred, X_test, Y_test, message):
     x = Settings.x
     y = Settings.y
     acc = model_eval(
-        sess, x, y, pred, X_test, Y_test, args=Settings.eval_params)
+        sess, x, y, pred, X_test, Y_test, args=args)
     Settings.fp.write(message + '\nAccuracy: %0.4f\n' % acc)
     print(message + '\nAccuracy: %0.4f\n' % acc)
 

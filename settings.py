@@ -67,7 +67,7 @@ class Settings:
         'learning_rate': LEARNING_RATE
     }
 
-    eval_params = {'batch_size': 1}
+    eval_params = {'batch_size': 128}
 
         # Set paramters for different dataset
     if dataset == 'mnist':
