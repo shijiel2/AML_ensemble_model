@@ -163,17 +163,18 @@ def defence_frame():
             X_test, Y_test, "logits ensemble model on clean data")
 
     # test performance of detector
-    if Settings.REINFORE_ENS:
-        Settings.fp.write('Detector logits\n')
-        test_detector(sess, logits_detector, Settings.x, X_test,
-                      (X_test.shape[0], len(logits_ens_def_model_list)+1))
-        Settings.fp.write('Detector probs\n')
-        test_detector(sess, probs_detector, Settings.x, X_test,
-                      (X_test.shape[0], len(probs_ens_def_model_list)+1))
-    else:
-        Settings.fp.write('Detector clean\n')
-        test_detector(sess, detector, Settings.x, X_test,
-                      (X_test.shape[0], len(Settings.attack_type)+1))
+    if Settings.EVAL_DETECTOR:
+        if Settings.REINFORE_ENS:
+            Settings.fp.write('Detector logits\n')
+            test_detector(sess, logits_detector, Settings.x, X_test,
+                        (X_test.shape[0], len(logits_ens_def_model_list)+1))
+            Settings.fp.write('Detector probs\n')
+            test_detector(sess, probs_detector, Settings.x, X_test,
+                        (X_test.shape[0], len(probs_ens_def_model_list)+1))
+        else:
+            Settings.fp.write('Detector clean\n')
+            test_detector(sess, detector, Settings.x, X_test,
+                        (X_test.shape[0], len(Settings.attack_type)+1))
 
     # Evaluate the accuracy of model on adv examples
     for attack_name in Settings.eval_attack_type:
@@ -190,18 +191,19 @@ def defence_frame():
                 adv_x = from_attack.generate(Settings.x, **attack_params)
 
             # test performance of detector
-            if not Settings.REINFORE_ENS:
-                test_detector(sess, detector, adv_x, X_test,
-                              (X_test.shape[0], len(Settings.attack_type)+1))
-            else:
-                if from_model in (model, ensemble_model_L, ensemble_model_L_U, ensemble_model_L_U_alter):
-                    Settings.fp.write('Detector logits\n')
-                    test_detector(sess, logits_detector, adv_x, X_test,
-                                  (X_test.shape[0], len(logits_ens_def_model_list)+1))
-                if from_model in (model, ensemble_model_P, ensemble_model_P_U, ensemble_model_P_U_alter):
-                    Settings.fp.write('Detector probs\n')
-                    test_detector(sess, probs_detector, adv_x, X_test,
-                                  (X_test.shape[0], len(probs_ens_def_model_list)+1))
+            if Settings.EVAL_DETECTOR:
+                if not Settings.REINFORE_ENS:
+                    test_detector(sess, detector, adv_x, X_test,
+                                (X_test.shape[0], len(Settings.attack_type)+1))
+                else:
+                    if from_model in (model, ensemble_model_L, ensemble_model_L_U, ensemble_model_L_U_alter):
+                        Settings.fp.write('Detector logits\n')
+                        test_detector(sess, logits_detector, adv_x, X_test,
+                                    (X_test.shape[0], len(logits_ens_def_model_list)+1))
+                    if from_model in (model, ensemble_model_P, ensemble_model_P_U, ensemble_model_P_U_alter):
+                        Settings.fp.write('Detector probs\n')
+                        test_detector(sess, probs_detector, adv_x, X_test,
+                                    (X_test.shape[0], len(probs_ens_def_model_list)+1))
 
             # eval model accuracy
             for to_model in to_model_lst:
