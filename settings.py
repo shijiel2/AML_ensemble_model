@@ -35,7 +35,8 @@ class Settings:
     cifar10_model -> model for cifar10
     mnist_model -> model for mnist
     """
-    attack_type = ['fgsm', 'pgd'] 
+    attack_type = [] 
+    eval_attack_type = ['spsa']
     dataset = 'mnist' 
     attack_model = 'basic_model'
     
@@ -66,7 +67,7 @@ class Settings:
         'learning_rate': LEARNING_RATE
     }
 
-    eval_params = {'batch_size': BATCH_SIZE}
+    eval_params = {'batch_size': 1}
 
         # Set paramters for different dataset
     if dataset == 'mnist':

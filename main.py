@@ -84,13 +84,6 @@ def defence_frame():
             from_model, attack_name, sess)
         def_model_list.append(model_i)
 
-    # Make baseline: ftramer ensemble model
-    ftramer_model = get_model('ftramer_model')
-    ftramer_loss = CrossEntropy(ftramer_model, smoothing=Settings.LABEL_SMOOTHING)
-    train_ftramer(sess, ftramer_loss, X_train, Y_train, attack_dict,
-                  args=Settings.train_params, rng=Settings.rng, var_list=ftramer_model.get_params())
-    model_name_dict[ftramer_model] = 'ftramer ensemble model'
-
     # Make unweighted Ensemble model
     def ensemble_model_logits_unweighted(x):
         return do_preds(x, model, 'logits', def_model_list=def_model_list)
@@ -168,8 +161,6 @@ def defence_frame():
             X_test, Y_test, "probs ensemble model on clean data")
     do_eval(sess, do_preds(Settings.x, ensemble_model_L, 'probs'),
             X_test, Y_test, "logits ensemble model on clean data")
-    do_eval(sess, do_preds(Settings.x, ftramer_model, 'probs'),
-            X_test, Y_test, "ftramer ensemble model on clean data")
 
     # test performance of detector
     if Settings.REINFORE_ENS:
@@ -185,7 +176,7 @@ def defence_frame():
                       (X_test.shape[0], len(Settings.attack_type)+1))
 
     # Evaluate the accuracy of model on adv examples
-    for attack_name in Settings.attack_type:
+    for attack_name in Settings.eval_attack_type:
         print('Evaluating on attack ' + attack_name + '...')
         Settings.fp.write('\n\n=============== Results on attack ' +
                           attack_name + ' ===============\n\n')
@@ -193,7 +184,10 @@ def defence_frame():
 
         def attack_from_to(from_model, to_model_lst):
             from_attack = get_attack(attack_name, from_model, sess)
-            adv_x = from_attack.generate(Settings.x, **attack_params)
+            if attack_name == 'spsa':
+                adv_x = from_attack.generate(Settings.x, y=tf.math.argmax(do_preds(Settings.x, from_model, 'probs')), **attack_params)
+            else: 
+                adv_x = from_attack.generate(Settings.x, **attack_params)
 
             # test performance of detector
             if not Settings.REINFORE_ENS:
@@ -222,25 +216,33 @@ def defence_frame():
 
             Settings.fp.write('\n')
 
-        # generate attack to origin model
-        attack_from_to(model, [model, ensemble_model_L, ensemble_model_P, ftramer_model])
-        attack_from_to(ftramer_model, [ftramer_model])
+        # white box attacks
+        if attack_name in ['fgsm', 'pgd']:
+            # generate attack to origin model
+            attack_from_to(model, [model, ensemble_model_L, ensemble_model_P])
+            # generate attack from weighted ensemble model
+            # logits
+            attack_from_to(ensemble_model_L, [ensemble_model_L])
+            # probs
+            attack_from_to(ensemble_model_P, [ensemble_model_P])
 
-        # generate attack from weighted ensemble model
-        # logits
-        attack_from_to(ensemble_model_L, [ensemble_model_L])
-        # probs
-        attack_from_to(ensemble_model_P, [ensemble_model_P])
+            # generate attack from unweighted ensemble model
+            # logits
+            attack_from_to(ensemble_model_L_U, [ensemble_model_L])
+            # probs
+            attack_from_to(ensemble_model_P_U, [ensemble_model_P])
 
-        # generate attack from unweighted ensemble model
-        # logits
-        attack_from_to(ensemble_model_L_U, [ensemble_model_L])
-        # probs
-        attack_from_to(ensemble_model_P_U, [ensemble_model_P])
-
-        if Settings.REINFORE_ENS:
-            attack_from_to(ensemble_model_L_U_alter, [ensemble_model_L])
-            attack_from_to(ensemble_model_P_U_alter, [ensemble_model_P])
+            if Settings.REINFORE_ENS:
+                attack_from_to(ensemble_model_L_U_alter, [ensemble_model_L])
+                attack_from_to(ensemble_model_P_U_alter, [ensemble_model_P])
+        
+        # black box attacks
+        else:
+            attack_from_to(model, [model])
+            # logits
+            attack_from_to(ensemble_model_L, [ensemble_model_L])
+            # probs
+            attack_from_to(ensemble_model_P, [ensemble_model_P])
 
     Settings.fp.close()
 

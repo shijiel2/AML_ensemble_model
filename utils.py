@@ -54,6 +54,8 @@ def get_attack(attack_type, model, sess):
         attack = CarliniWagnerL2(model, sess)
     elif attack_type == 'jsma':
         attack = SaliencyMapMethod(model)
+    elif attack_type == 'spsa':
+        attack = SPSA(model)
     else:
         raise ValueError(attack_type)
     return attack
@@ -66,6 +68,8 @@ def get_para(attack_type):
         attack_params = {'eps': 0.3, 'clip_min': 0., 'clip_max': 1.}
         if attack_type == 'fgsm':
             attack_params = attack_params
+        elif attack_type == 'spsa':
+            attack_params.update({'nb_iter': 100, 'spsa_samples': 128})
         elif attack_type == 'bim':
             attack_params.update({'nb_iter': 50, 'eps_iter': .01})
         elif attack_type == 'pgd':
@@ -186,7 +190,7 @@ def do_sess_batched_eval(sess, x_gen, X_in, X_out_shape):
     :param X_in: numpy array with inputs
     :return: ndarry with same shape 
     """
-    args = _ArgsWrapper(Settings.eval_params or {})
+    args = _ArgsWrapper({'batch_size': 128} or {})
     assert args.batch_size, "Batch size was not given in args dict"
     if X_in is None:
         raise ValueError("X_in argument must be supplied.")
