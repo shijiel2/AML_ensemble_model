@@ -185,7 +185,10 @@ def defence_frame():
 
         def attack_from_to(from_model, to_model_lst):
             from_attack = get_attack(attack_name, from_model, sess)
-            adv_x = from_attack.generate(Settings.x, **attack_params)
+            if attack_name == 'spsa':
+                adv_x = from_attack.generate(Settings.x, y=from_model.get_probs(Settings.x), **attack_params)
+            else:
+                adv_x = from_attack.generate(Settings.x, **attack_params)
 
             # test performance of detector
             if Settings.EVAL_DETECTOR:

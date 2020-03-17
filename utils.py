@@ -69,7 +69,7 @@ def get_para(attack_type):
         if attack_type == 'fgsm':
             attack_params = attack_params
         elif attack_type == 'spsa':
-            attack_params.update({'nb_iter': 10, 'y': Settings.y})
+            attack_params.update({'nb_iter': 10})
         elif attack_type == 'bim':
             attack_params.update({'nb_iter': 50, 'eps_iter': .01})
         elif attack_type == 'pgd':
@@ -326,8 +326,12 @@ def train_defence_model(sess, model_i, from_model, attack_name, X_train, Y_train
             model_i, smoothing=Settings.LABEL_SMOOTHING, attack=attack, adv_coeff=1.)
 
     print('Trainnig model:', attack_name)
+    
+    train_params = Settings.train_params
+    # if attack_name == 'spsa':
+    #     train_params['batch_size'] = 1
     train(sess, loss_i, X_train, Y_train,
-            args=Settings.train_params, rng=Settings.rng, var_list=model_i.get_params())
+            args=train_params, rng=Settings.rng, var_list=model_i.get_params())
 
 def reinfrocement_ensemble_gen(sess, name, from_model, def_model_list, attack_dict, X_train, Y_train):
     rein_def_model_list = def_model_list.copy()

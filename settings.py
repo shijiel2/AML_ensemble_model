@@ -35,7 +35,7 @@ class Settings:
     cifar10_model -> model for cifar10
     mnist_model -> model for mnist
     """
-    attack_type = ['fgsm', 'pgd'] 
+    attack_type = ['fgsm'] 
     eval_attack_type = ['spsa']
     dataset = 'mnist' 
     attack_model = 'basic_model'
