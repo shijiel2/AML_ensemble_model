@@ -181,7 +181,7 @@ def get_pred(x, model, method):
         return model.get_logits(x)
 
 
-def do_sess_batched_eval(sess, x_gen, X_in, X_out_shape):
+def do_sess_batched_eval(sess, x_gen, X_in, X_out_shape, args):
     """
     Apply gen to ndarray, and return a new ndarray.
     :param sess: TF session to use
@@ -190,7 +190,7 @@ def do_sess_batched_eval(sess, x_gen, X_in, X_out_shape):
     :param X_in: numpy array with inputs
     :return: ndarry with same shape 
     """
-    args = _ArgsWrapper({'batch_size': 128} or {})
+    args = _ArgsWrapper(args or {})
     assert args.batch_size, "Batch size was not given in args dict"
     if X_in is None:
         raise ValueError("X_in argument must be supplied.")
@@ -228,8 +228,12 @@ def get_merged_train_data(sess, attack_dict, attack_types, X_train):
     Y_merged[:, 0] = np.ones(X_train.shape[0])
     for i, attack_name in enumerate(attack_types):
         # generate adversrial X
+        if 'spsa' in attack_name:
+            args = {'batch_size': 1}
+        else:
+            args = {'batch_size': Settings.BATCH_SIZE}
         X_train_adv = do_sess_batched_eval(
-            sess, attack_dict[attack_name](Settings.x), X_train, X_train.shape)
+            sess, attack_dict[attack_name](Settings.x), X_train, X_train.shape, args=args)
         # constructe Y
         Y_train_adv = np.zeros((X_train.shape[0], len(attack_types) + 1))
         Y_train_adv[:, i+1] = np.ones(X_train.shape[0])
@@ -274,7 +278,7 @@ def test_detector(sess, detector, x_in, X_test, X_out_shape):
     """
     det_probs = get_pred(x_in, detector, 'probs')
     Probs = do_sess_batched_eval(
-        sess, det_probs, X_test, X_out_shape)
+        sess, det_probs, X_test, X_out_shape, args={'batch_size': Settings.BATCH_SIZE})
 
     Preds = np.argmax(Probs, axis=1)
     unique, counts = np.unique(Preds, return_counts=True)
@@ -316,7 +320,7 @@ def get_attack_fun(from_model, attack_name, sess):
     attack_params = get_para(attack_name)
     attack_method = get_attack(attack_name, from_model, sess)
     def attack(x):
-        if attack_name == 'spsa':
+        if 'spsa' in attack_name:
             return attack_method.generate(x, y=from_model.get_predicted_class(x), **attack_params)
         else:
             return attack_method.generate(x, **attack_params)
@@ -331,8 +335,8 @@ def train_defence_model(sess, model_i, from_model, attack_name, X_train, Y_train
     print('Trainnig model:', attack_name)
     
     train_params = Settings.train_params
-    # if attack_name == 'spsa':
-    #     train_params['batch_size'] = 1
+    if 'spsa' in attack_name:
+        train_params['batch_size'] = 1
     train(sess, loss_i, X_train, Y_train,
             args=train_params, rng=Settings.rng, var_list=model_i.get_params())
 
@@ -359,6 +363,7 @@ def write_exp_summary():
              'Date: ' + str(datetime.datetime.now()) + '\n\n' + \
              'Dataset: ' + Settings.dataset + '\n' + \
              'Attack types: ' + str(Settings.attack_type) + '\n' + \
+             'Eval attack types: ' + str(Settings.eval_attack_type) + '\n' + \
              'Model type: ' + str(Settings.attack_model) + '\n' + \
              'Is Online: ' + str(Settings.IS_ONLINE) + '\n' + \
              'Randomness in prediction: ' + str(Settings.PRED_RANDOM) + '\n' + \
