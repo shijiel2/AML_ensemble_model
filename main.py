@@ -40,7 +40,7 @@ def defence_frame():
     tf.set_random_seed(1234)
 
     # Set logging level to see debug information
-    set_log_level(logging.ERROR)
+    set_log_level(logging.INFO)
 
     # Create TF session
     sess = tf.Session(config=tf.ConfigProto(**Settings.config_args))
@@ -135,7 +135,7 @@ def defence_frame():
     else:
         detector = get_detector('detector_general', len(def_model_list)+1)
         train_detector(sess, detector, attack_dict,
-                       Settings.attack_type, X_train)
+                       Settings.attack_type, X_train, Y_train)
 
         def ensemble_model_logits(x):
             return do_preds(x, model, 'logits', def_model_list=def_model_list, detector=detector)
@@ -156,31 +156,35 @@ def defence_frame():
         '\n\n=============== Results on clean data ===============\n\n')
     print('Evaluating on clean data...')
     do_eval(sess, do_preds(Settings.x, model, 'probs'),
-            X_test, Y_test, "origin model on clean data")
+            X_test, Y_test, "origin model on clean data", Settings.eval_params)
     do_eval(sess, do_preds(Settings.x, ensemble_model_P, 'probs'),
-            X_test, Y_test, "probs ensemble model on clean data")
+            X_test, Y_test, "probs ensemble model on clean data", Settings.eval_params)
     do_eval(sess, do_preds(Settings.x, ensemble_model_L, 'probs'),
-            X_test, Y_test, "logits ensemble model on clean data")
+            X_test, Y_test, "logits ensemble model on clean data", Settings.eval_params)
 
     # test performance of detector
     if Settings.EVAL_DETECTOR:
         if Settings.REINFORE_ENS:
             Settings.fp.write('Detector logits\n')
-            test_detector(sess, logits_detector, Settings.x, X_test,
-                        (X_test.shape[0], len(logits_ens_def_model_list)+1))
+            test_detector(sess, logits_detector, Settings.x, X_test, Y_test,
+                        (X_test.shape[0], len(logits_ens_def_model_list)+1), Settings.eval_params)
             Settings.fp.write('Detector probs\n')
-            test_detector(sess, probs_detector, Settings.x, X_test,
-                        (X_test.shape[0], len(probs_ens_def_model_list)+1))
+            test_detector(sess, probs_detector, Settings.x, X_test, Y_test,
+                        (X_test.shape[0], len(probs_ens_def_model_list)+1), Settings.eval_params)
         else:
             Settings.fp.write('Detector clean\n')
-            test_detector(sess, detector, Settings.x, X_test,
-                        (X_test.shape[0], len(Settings.attack_type)+1))
+            test_detector(sess, detector, Settings.x, X_test, Y_test,
+                        (X_test.shape[0], len(Settings.attack_type)+1), Settings.eval_params)
 
     # Evaluate the accuracy of model on adv examples
     for attack_name in Settings.eval_attack_type:
         print('Evaluating on attack ' + attack_name + '...')
         Settings.fp.write('\n\n=============== Results on attack ' +
                           attack_name + ' ===============\n\n')
+        if 'spsa' in attack_name:
+            args = {'batch_size': 1}
+        else:
+            args = {'batch_size': Settings.BATCH_SIZE}
 
         def attack_from_to(from_model, to_model_lst):
             adv_x = get_attack_fun(from_model, attack_name, sess)(Settings.x)
@@ -188,17 +192,17 @@ def defence_frame():
             # test performance of detector
             if Settings.EVAL_DETECTOR:
                 if not Settings.REINFORE_ENS:
-                    test_detector(sess, detector, adv_x, X_test,
-                                (X_test.shape[0], len(Settings.attack_type)+1))
+                    test_detector(sess, detector, adv_x, X_test, Y_test,
+                                (X_test.shape[0], len(Settings.attack_type)+1), args)
                 else:
                     if from_model in (model, ensemble_model_L, ensemble_model_L_U, ensemble_model_L_U_alter):
                         Settings.fp.write('Detector logits\n')
-                        test_detector(sess, logits_detector, adv_x, X_test,
-                                    (X_test.shape[0], len(logits_ens_def_model_list)+1))
+                        test_detector(sess, logits_detector, adv_x, X_test, Y_test,
+                                    (X_test.shape[0], len(logits_ens_def_model_list)+1), args)
                     if from_model in (model, ensemble_model_P, ensemble_model_P_U, ensemble_model_P_U_alter):
                         Settings.fp.write('Detector probs\n')
-                        test_detector(sess, probs_detector, adv_x, X_test,
-                                    (X_test.shape[0], len(probs_ens_def_model_list)+1))
+                        test_detector(sess, probs_detector, adv_x, X_test, Y_test,
+                                    (X_test.shape[0], len(probs_ens_def_model_list)+1), args)
 
             # eval model accuracy
             for to_model in to_model_lst:
@@ -206,10 +210,7 @@ def defence_frame():
                 message = "==ATTACK ON=> " + \
                     model_name_dict[from_model] + \
                     " ==TEST ON=> " + model_name_dict[to_model]
-                if attack_name == 'spsa':
-                    do_eval(sess, do_preds(adv_x, to_model, 'probs'), X_test, Y_test, message, args={'batch_size': 1})
-                else:
-                    do_eval(sess, do_preds(adv_x, to_model, 'probs'), X_test, Y_test, message)
+                do_eval(sess, do_preds(adv_x, to_model, 'probs'), X_test, Y_test, message, args={'batch_size': 1})
                 end = time.time()
                 print('   ' + message + ' Used: ' + str(end - start))
 
@@ -237,7 +238,7 @@ def defence_frame():
         
         # black box attacks
         else:
-            attack_from_to(model, [model])
+            attack_from_to(model, [model, ensemble_model_L, ensemble_model_P])
             # logits
             attack_from_to(ensemble_model_L, [ensemble_model_L])
             # probs

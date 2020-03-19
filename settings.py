@@ -35,19 +35,19 @@ class Settings:
     cifar10_model -> model for cifar10
     mnist_model -> model for mnist
     """
-    attack_type = ['spsa'] 
-    eval_attack_type = ['spsa']
+    attack_type = ['fgsm', 'pgd', 'spsa'] 
+    eval_attack_type = ['fgsm', 'pgd', 'spsa']
     dataset = 'mnist' 
     attack_model = 'basic_model'
     
     # advanced settings 
-    REINFORE_ENS = []
+    REINFORE_ENS = ['fgsm', 'pgd', 'spsa']
     PRED_RANDOM = False
     RANDOM_K = 3
     RANDOM_STDDEV = 0.1
     IS_ONLINE = False
     LINEAR_DETECTOR = False
-    EVAL_DETECTOR = False
+    EVAL_DETECTOR = True
 
 
     # static varibales 
@@ -57,10 +57,10 @@ class Settings:
 
     if NUM_THREADS:
         config_args = dict(intra_op_parallelism_threads=1,
-                                allow_soft_placement=True, log_device_placement=True)
+                                allow_soft_placement=True, log_device_placement=False)
     else:
         config_args = dict(allow_soft_placement=True,
-                                log_device_placement=True)
+                                log_device_placement=False)
 
     train_params = {
         'nb_epochs': NB_EPOCHS,

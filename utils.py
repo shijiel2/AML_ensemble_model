@@ -112,7 +112,7 @@ def get_para(attack_type):
     return attack_params
 
 
-def do_eval(sess, pred, X_test, Y_test, message, args=Settings.eval_params):
+def do_eval(sess, pred, X_test, Y_test, message, args):
     """
     Compute the accuracy of a TF model on some data
     :param sess: TF session to use
@@ -181,7 +181,7 @@ def get_pred(x, model, method):
         return model.get_logits(x)
 
 
-def do_sess_batched_eval(sess, x_gen, X_in, X_out_shape, args):
+def do_sess_batched_eval(sess, x_gen, X_in, Y_in, X_out_shape, args):
     """
     Apply gen to ndarray, and return a new ndarray.
     :param sess: TF session to use
@@ -205,7 +205,10 @@ def do_sess_batched_eval(sess, x_gen, X_in, X_out_shape, args):
         for batch in tqdm(range(nb_batches)):
             start = batch * args.batch_size
             end = min(len(X_in), start + args.batch_size)
-            feed_dict = {Settings.x: X_in[start:end]}
+            feed_dict = {
+                Settings.x: X_in[start:end],
+                Settings.y: Y_in[start:end]
+            }
             X_out[start:end] = x_gen.eval(feed_dict=feed_dict)
 
         assert end >= len(X_in)
@@ -213,7 +216,7 @@ def do_sess_batched_eval(sess, x_gen, X_in, X_out_shape, args):
     return X_out
 
 
-def get_merged_train_data(sess, attack_dict, attack_types, X_train):
+def get_merged_train_data(sess, attack_dict, attack_types, X_train, Y_train):
     """
     Construct the merged data for trainning the classifier
     :param sess: current session
@@ -233,7 +236,7 @@ def get_merged_train_data(sess, attack_dict, attack_types, X_train):
         else:
             args = {'batch_size': Settings.BATCH_SIZE}
         X_train_adv = do_sess_batched_eval(
-            sess, attack_dict[attack_name](Settings.x), X_train, X_train.shape, args=args)
+            sess, attack_dict[attack_name](Settings.x), X_train, Y_train, X_train.shape, args=args)
         # constructe Y
         Y_train_adv = np.zeros((X_train.shape[0], len(attack_types) + 1))
         Y_train_adv[:, i+1] = np.ones(X_train.shape[0])
@@ -269,7 +272,7 @@ def get_detector(name, width):
     return detector
 
 
-def test_detector(sess, detector, x_in, X_test, X_out_shape):
+def test_detector(sess, detector, x_in, X_test, Y_test, X_out_shape, args):
     """
     Test the performance of detector by reproducing the weights it assigned in each adv examples.
     :param sess: current session
@@ -280,7 +283,7 @@ def test_detector(sess, detector, x_in, X_test, X_out_shape):
     """
     det_probs = get_pred(x_in, detector, 'probs')
     Probs = do_sess_batched_eval(
-        sess, det_probs, X_test, X_out_shape, args={'batch_size': Settings.BATCH_SIZE})
+        sess, det_probs, X_test, Y_test, X_out_shape, args=args)
 
     Preds = np.argmax(Probs, axis=1)
     unique, counts = np.unique(Preds, return_counts=True)
@@ -294,7 +297,7 @@ def test_detector(sess, detector, x_in, X_test, X_out_shape):
     print('detector preds counts:' + str(dict(zip(unique, counts))))
 
 
-def train_detector(sess, detector, attack_dict, attack_types, X_train):
+def train_detector(sess, detector, attack_dict, attack_types, X_train, Y_train):
     """
     Train a detector and return it.
     :param sess: current session
@@ -308,7 +311,7 @@ def train_detector(sess, detector, attack_dict, attack_types, X_train):
     # prepare data
     print('Preparing merged data...')
     X_merged, Y_merged = get_merged_train_data(
-        sess, attack_dict, attack_types, X_train)
+        sess, attack_dict, attack_types, X_train, Y_train)
 
     loss_d = CrossEntropy(detector, smoothing=Settings.LABEL_SMOOTHING)
     print('Train detector with X_merged and Y_merged shape:',
@@ -365,7 +368,7 @@ def reinfrocement_ensemble_gen(sess, name, from_model, def_model_list, attack_di
     rein_detector = get_detector(
         'rein_detector_'+name, len(rein_def_model_list)+1)
     train_detector(sess, rein_detector, attack_dict,
-                   rein_attack_types, X_train)
+                   rein_attack_types, X_train, Y_train)
 
     return rein_def_model_list, rein_detector
 
