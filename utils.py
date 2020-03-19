@@ -18,10 +18,10 @@ from cleverhans.train import train
 from settings import Settings
 
 
-
 """
 **************************** Helper Functions ****************************
 """
+
 
 def get_model(scope, nb_classes=Settings.nb_classes, nb_filters=Settings.NB_FILTERS, input_shape=Settings.input_shape):
     dataset = Settings.dataset
@@ -69,7 +69,7 @@ def get_para(attack_type):
         if attack_type == 'fgsm':
             attack_params = attack_params
         elif attack_type == 'spsa':
-            attack_params.update({'nb_iter': 10, 'y': Settings.y})
+            attack_params.update({'nb_iter': 10})
         elif attack_type == 'bim':
             attack_params.update({'nb_iter': 50, 'eps_iter': .01})
         elif attack_type == 'pgd':
@@ -257,13 +257,15 @@ def get_detector(name, width):
             detector = ModelBasicCNN(name, width, Settings.NB_FILTERS)
         else:
             detector = SimpleLinear(name, width, Settings.NB_FILTERS)
-    
+
     elif Settings.dataset == 'cifar10':
         if not Settings.LINEAR_DETECTOR:
-            detector = ModelAllConvolutional(name, width, Settings.NB_FILTERS, input_shape=Settings.input_shape)
+            detector = ModelAllConvolutional(
+                name, width, Settings.NB_FILTERS, input_shape=Settings.input_shape)
         else:
-            detector = SimpleCifar10(name, width, Settings.NB_FILTERS, input_shape=Settings.input_shape)
-    
+            detector = SimpleCifar10(
+                name, width, Settings.NB_FILTERS, input_shape=Settings.input_shape)
+
     return detector
 
 
@@ -291,6 +293,7 @@ def test_detector(sess, detector, x_in, X_test, X_out_shape):
     print('detector mean probs:' + str(np.mean(Probs, axis=0)) + '\n')
     print('detector preds counts:' + str(dict(zip(unique, counts))))
 
+
 def train_detector(sess, detector, attack_dict, attack_types, X_train):
     """
     Train a detector and return it.
@@ -312,47 +315,60 @@ def train_detector(sess, detector, attack_dict, attack_types, X_train):
           X_merged.shape, Y_merged.shape)
 
     train(sess, loss_d, X_merged, Y_merged,
-            args=Settings.train_params, rng=Settings.rng, var_list=detector.get_params())
+          args=Settings.train_params, rng=Settings.rng, var_list=detector.get_params())
 
     return detector
+
 
 def get_attack_fun(from_model, attack_name, sess):
     attack_params = get_para(attack_name)
     attack_method = get_attack(attack_name, from_model, sess)
+
     def attack(x):
-        return attack_method.generate(x, **attack_params)
+        if 'spsa' in attack_name:
+            return attack_method.generate(x, y=Settings.y, **attack_params)
+        else:
+            return attack_method.generate(x, **attack_params)
     return attack
 
-def train_defence_model(sess, model_i, from_model, attack_name, X_train, Y_train):
-    
-    attack = get_attack_fun(from_model, attack_name, sess)
-    loss_i = CrossEntropy(
-            model_i, smoothing=Settings.LABEL_SMOOTHING, attack=attack, adv_coeff=1.)
 
-    print('Trainnig model:', attack_name)
-    
+def train_defence_model(sess, model_i, from_model, attack_name, X_train, Y_train):
+    attack_method = get_attack(attack_name, from_model, sess)
+    attack_params = get_para(attack_name)
     train_params = Settings.train_params
+    pass_y = False
     if 'spsa' in attack_name:
         train_params['batch_size'] = 1
+        pass_y = True
+
+    print('Trainnig model:', attack_name)
+    loss_i = CrossEntropy(
+        model_i, smoothing=Settings.LABEL_SMOOTHING, attack=attack_method, adv_coeff=1., attack_params=attack_params, pass_y=pass_y)
     train(sess, loss_i, X_train, Y_train,
-            args=train_params, rng=Settings.rng, var_list=model_i.get_params())
+          args=train_params, rng=Settings.rng, var_list=model_i.get_params())
+
 
 def reinfrocement_ensemble_gen(sess, name, from_model, def_model_list, attack_dict, X_train, Y_train):
     rein_def_model_list = def_model_list.copy()
 
     for attack_name in Settings.REINFORE_ENS:
         model_i = get_model(name + '_rein_def_model_' + attack_name)
-        train_defence_model(sess, model_i, from_model, attack_name, X_train, Y_train)
-        
-        rein_def_model_list.append(model_i)
-        attack_dict[str(name + attack_name)] = get_attack_fun(from_model, attack_name, sess)
+        train_defence_model(sess, model_i, from_model,
+                            attack_name, X_train, Y_train)
 
-    rein_attack_types = Settings.attack_type + [str(name + a) for a in Settings.REINFORE_ENS]
-    rein_detector = get_detector('rein_detector_'+name, len(rein_def_model_list)+1)
-    train_detector(sess, rein_detector, attack_dict, rein_attack_types, X_train)
+        rein_def_model_list.append(model_i)
+        attack_dict[str(name + attack_name)
+                    ] = get_attack_fun(from_model, attack_name, sess)
+
+    rein_attack_types = Settings.attack_type + \
+        [str(name + a) for a in Settings.REINFORE_ENS]
+    rein_detector = get_detector(
+        'rein_detector_'+name, len(rein_def_model_list)+1)
+    train_detector(sess, rein_detector, attack_dict,
+                   rein_attack_types, X_train)
 
     return rein_def_model_list, rein_detector
-    
+
 
 def write_exp_summary():
     fp = Settings.fp
