@@ -35,13 +35,13 @@ class Settings:
     cifar10_model -> model for cifar10
     mnist_model -> model for mnist
     """
-    attack_type = ['fgsm', 'pgd'] 
+    attack_type = ['spsa'] 
     eval_attack_type = ['spsa']
     dataset = 'mnist' 
     attack_model = 'basic_model'
     
     # advanced settings 
-    REINFORE_ENS = ['spsa']
+    REINFORE_ENS = []
     PRED_RANDOM = False
     RANDOM_K = 3
     RANDOM_STDDEV = 0.1

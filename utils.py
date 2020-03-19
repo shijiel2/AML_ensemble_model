@@ -69,7 +69,7 @@ def get_para(attack_type):
         if attack_type == 'fgsm':
             attack_params = attack_params
         elif attack_type == 'spsa':
-            attack_params.update({'nb_iter': 10})
+            attack_params.update({'nb_iter': 10, 'y': Settings.y})
         elif attack_type == 'bim':
             attack_params.update({'nb_iter': 50, 'eps_iter': .01})
         elif attack_type == 'pgd':
@@ -320,10 +320,7 @@ def get_attack_fun(from_model, attack_name, sess):
     attack_params = get_para(attack_name)
     attack_method = get_attack(attack_name, from_model, sess)
     def attack(x):
-        if 'spsa' in attack_name:
-            return attack_method.generate(x, y=from_model.get_predicted_class(x), **attack_params)
-        else:
-            return attack_method.generate(x, **attack_params)
+        return attack_method.generate(x, **attack_params)
     return attack
 
 def train_defence_model(sess, model_i, from_model, attack_name, X_train, Y_train):
