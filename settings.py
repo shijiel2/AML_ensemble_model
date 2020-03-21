@@ -1,3 +1,5 @@
+import os
+from pathlib import Path
 import tensorflow as tf
 import numpy as np
 from cleverhans.utils_mnist import data_mnist
@@ -41,7 +43,7 @@ class Settings:
     attack_model = 'basic_model'
     
     # advanced settings 
-    REINFORE_ENS = ['fgsm', 'pgd', 'spsa']
+    REINFORE_ENS = ['fgsm', 'pgd', 'spsa'] 
     PRED_RANDOM = False
     RANDOM_K = 3
     RANDOM_STDDEV = 0.1
@@ -51,10 +53,12 @@ class Settings:
 
 
     # static varibales 
+    saved_data_path = './exps/' + dataset + '/' + attack_model + '/train_data'
+    Path(saved_data_path).mkdir(parents=True, exist_ok=True)
+    fp = open(os.path.join(saved_data_path, str(IS_ONLINE)) + '.txt', 'w')
+
     rng = np.random.RandomState([2017, 10, 30])
-    fp = open(attack_model + '_' + str(IS_ONLINE) + '.txt', 'w')
-
-
+    
     if NUM_THREADS:
         config_args = dict(intra_op_parallelism_threads=1,
                                 allow_soft_placement=True, log_device_placement=False)
