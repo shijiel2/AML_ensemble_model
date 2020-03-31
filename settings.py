@@ -41,6 +41,7 @@ class Settings:
     eval_attack_type = ['fgsm', 'pgd', 'spsa']
     dataset = 'mnist' 
     attack_model = 'basic_model'
+    exp_name = 'full_spsa_20'
     
     # advanced settings 
     REINFORE_ENS = ['fgsm', 'pgd', 'spsa'] 
@@ -53,9 +54,10 @@ class Settings:
 
 
     # static varibales 
-    saved_data_path = './exps/' + dataset + '/' + attack_model + '/train_data'
+    exp_path = './exps/' + dataset + '_' + exp_name + '/' + attack_model
+    saved_data_path = exp_path + '/train_data'
     Path(saved_data_path).mkdir(parents=True, exist_ok=True)
-    fp = open(os.path.join(saved_data_path, str(IS_ONLINE)) + '.txt', 'w')
+    fp = open(exp_path + '/' + str(IS_ONLINE) + '.txt', 'w')
 
     rng = np.random.RandomState([2017, 10, 30])
     
