@@ -171,6 +171,85 @@ class CrossEntropy(Loss):
     return loss
 
 
+class CrossEntropy_detector(Loss):
+  """Cross-entropy loss for a multiclass softmax classifier.
+  :param model: Model instance, the model on which to apply the loss.
+  :param smoothing: float, amount of label smoothing for cross-entropy.
+  :param attack: function, given an input x, return an attacked x'.
+  :param pass_y: bool, if True pass y to the attack
+  :param adv_coeff: Coefficient to put on the cross-entropy for
+    adversarial examples, if adversarial examples are used.
+    The coefficient on the cross-entropy for clean examples is
+    1. - adv_coeff.
+  :param attack_params: dict, keyword arguments passed to `attack.generate`
+  """
+
+  def __init__(self, model, lam, smoothing=0., attack=None, pass_y=False,
+               adv_coeff=0.5, attack_params=None,
+               **kwargs):
+    if smoothing < 0 or smoothing > 1:
+      raise ValueError('Smoothing must be in [0, 1]', smoothing)
+    self.kwargs = kwargs
+    Loss.__init__(self, model, locals(), attack)
+    self.smoothing = smoothing
+    self.adv_coeff = adv_coeff
+    self.pass_y = pass_y
+    self.attack_params = attack_params
+    self.lam = lam
+
+  def fprop(self, x, y, **kwargs):
+    kwargs.update(self.kwargs)
+    if self.attack is not None:
+      attack_params = copy.copy(self.attack_params)
+      if attack_params is None:
+        attack_params = {}
+      if self.pass_y:
+        attack_params['y'] = y
+      x = x, self.attack.generate(x, **attack_params)
+      coeffs = [1. - self.adv_coeff, self.adv_coeff]
+      if self.adv_coeff == 1.:
+        x = (x[1],)
+        coeffs = (coeffs[1],)
+    else:
+      x = tuple([x])
+      coeffs = [1.]
+    assert np.allclose(sum(coeffs), 1.)
+
+    # Catching RuntimeError: Variable -= value not supported by tf.eager.
+    try:
+      y -= self.smoothing * (y - 1. / tf.cast(y.shape[-1], y.dtype))
+    except RuntimeError:
+      y.assign_sub(self.smoothing * (y - 1. / tf.cast(y.shape[-1],
+                                                      y.dtype)))
+
+    def logit_add_padding(logits):
+      paddings = tf.constant([[0, 0,], [0, 1]])
+      return tf.pad(logits, paddings, "CONSTANT")
+
+    zeros = tf.zeros((tf.shape(y)[0], 1), dtype=y.dtype)
+    ones = tf.ones((tf.shape(y)[0], 1), dtype=y.dtype)
+    dummy_y = tf.concat([tf.zeros_like(y), ones], 1)
+    padded_y = tf.concat([y, zeros], 1)
+
+    logits = [self.model.get_logits(x, **kwargs) for x in x]
+    loss1 = sum(
+        coeff * tf.reduce_mean(softmax_cross_entropy_with_logits(labels=padded_y,
+                                                                 logits=logit_add_padding(logit)))
+        for coeff, logit in safe_zip(coeffs, logits))
+
+    loss1_alter = sum(
+        coeff * tf.reduce_mean(softmax_cross_entropy_with_logits(labels=y,
+                                                                 logits=logit))
+        for coeff, logit in safe_zip(coeffs, logits))
+
+    loss2 = sum(
+        coeff * tf.reduce_mean(softmax_cross_entropy_with_logits(labels=dummy_y,
+                                                                 logits=logit_add_padding(logit)))
+        for coeff, logit in safe_zip(coeffs, logits))
+
+    return loss1_alter - self.lam * loss2
+
+
 class MixUp(Loss):
   """Mixup ( https://arxiv.org/abs/1710.09412 )
   :param model: Model instance, the model on which to apply the loss.

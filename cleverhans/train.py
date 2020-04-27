@@ -19,6 +19,7 @@ import os
 import time
 import warnings
 import random
+from tqdm import tqdm
 
 import math
 import numpy as np
@@ -215,7 +216,7 @@ def train(sess, loss, x_train, y_train,
       y_train_shuffled = y_train[index_shuf]
 
     prev = time.time()
-    for batch in range(nb_batches):
+    for batch in tqdm(range(nb_batches)):
       if dataset_train is not None:
         x_train_shuffled, y_train_shuffled = sess.run(data_iterator)
         start, end = 0, batch_size

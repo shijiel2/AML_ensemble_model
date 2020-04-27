@@ -28,7 +28,7 @@ from sklearn.model_selection import train_test_split
 from settings import Settings
 from data_saved_utils import get_attack, get_attack_fun, get_detector, get_model, get_para, \
     train_defence_model, do_preds, reinfrocement_ensemble_gen, train_detector, \
-    test_detector, do_eval, write_exp_summary, save_data, load_data, make_adv_data
+    test_detector, do_eval, write_exp_summary, save_data, load_data, make_adv_data, train_defence_model_online
 
 
 def defence_frame():
@@ -40,7 +40,7 @@ def defence_frame():
     tf.set_random_seed(1234)
 
     # Set logging level to see debug information
-    set_log_level(logging.INFO)
+    set_log_level(logging.WARN)
 
     # Create TF session
     sess = tf.Session(config=tf.ConfigProto(**Settings.config_args))
@@ -84,6 +84,13 @@ def defence_frame():
             from_model, attack_name, sess)
         def_model_list.append(model_i)
 
+    # The m+1 adv_training model to defend ensemble model itself
+    self_defence_model_logits = get_model('model_self_defence_logits')
+    model_name_dict[self_defence_model_logits] = 'model self defence logits'
+
+    self_defence_model_probs = get_model('model_self_defence_probs')
+    model_name_dict[self_defence_model_probs] = 'model self defence probs'
+
     # Make unweighted Ensemble model
     def ensemble_model_logits_unweighted(x):
         return do_preds(x, model, 'logits', def_model_list=def_model_list)
@@ -98,6 +105,10 @@ def defence_frame():
     ensemble_model_P_U = CallableModelWrapper(ensemble_model_probs_unweighted, 'logits')
     model_name_dict[ensemble_model_P_U] = 'unweighted probs ensemble model'
 
+    # Make blackbox samples data if needed
+    if load_data(Settings.blackbox_samples) is None:
+        save_data(make_adv_data(sess, ensemble_model_L_U, Settings.BLACKBOX_SAMPLES_METHOD, X_train, Y_train), Settings.blackbox_samples)
+
     # Reinforce weighted ensemble model
     if Settings.REINFORE_ENS:
 
@@ -107,10 +118,10 @@ def defence_frame():
             sess, 'probs', ensemble_model_P_U, def_model_list, attack_dict, X_train, Y_train)
 
         def ensemble_model_logits(x):
-            return do_preds(x, model, 'logits', def_model_list=logits_ens_def_model_list, detector=logits_detector)
+            return do_preds(x, model, 'logits', def_model_list=logits_ens_def_model_list + [self_defence_model_logits], detector=logits_detector)
 
         def ensemble_model_probs(x):
-            return tf.math.log(do_preds(x, model, 'probs', def_model_list=probs_ens_def_model_list, detector=probs_detector))
+            return tf.math.log(do_preds(x, model, 'probs', def_model_list=probs_ens_def_model_list + [self_defence_model_probs], detector=probs_detector))
 
         def ensemble_model_logits_unweighted_alter(x):
             return do_preds(x, model, 'logits', def_model_list=logits_ens_def_model_list)
@@ -133,14 +144,14 @@ def defence_frame():
         model_name_dict[ensemble_model_P_U_alter] = 'same sized unweighted probs ensemble model'
 
     else:
-        detector = get_detector('detector_general', len(def_model_list)+1)
+        detector = get_detector('detector_general', len(def_model_list) + Settings.def_list_addon)
         train_detector(sess, detector, def_model_list, X_train, Y_train)
 
         def ensemble_model_logits(x):
-            return do_preds(x, model, 'logits', def_model_list=def_model_list, detector=detector)
+            return do_preds(x, model, 'logits', def_model_list=def_model_list + [self_defence_model_logits], detector=detector)
 
         def ensemble_model_probs(x):
-            return tf.math.log(do_preds(x, model, 'probs', def_model_list=def_model_list, detector=detector))
+            return tf.math.log(do_preds(x, model, 'probs', def_model_list=def_model_list + [self_defence_model_probs], detector=detector))
 
         # weighted ensemble model: model_0, model_fgsm, model_pgd
         ensemble_model_L = CallableModelWrapper(ensemble_model_logits, 'logits')
@@ -148,6 +159,10 @@ def defence_frame():
 
         ensemble_model_P = CallableModelWrapper(ensemble_model_probs, 'logits')
         model_name_dict[ensemble_model_P] = 'weighted probs ensemble model'
+
+    # Train self defence model
+    train_defence_model_online(sess, self_defence_model_logits, ensemble_model_L, 'pgd', X_train, Y_train)
+    train_defence_model_online(sess, self_defence_model_probs, ensemble_model_P, 'pgd', X_train, Y_train)
 
     # Evaluate the accuracy of model on clean examples
     write_exp_summary()
@@ -166,14 +181,14 @@ def defence_frame():
         if Settings.REINFORE_ENS:
             Settings.fp.write('Detector logits\n')
             test_detector(sess, logits_detector, Settings.x, X_test, Y_test,
-                        (X_test.shape[0], len(logits_ens_def_model_list)+1))
+                        (X_test.shape[0], len(logits_ens_def_model_list)+2))
             Settings.fp.write('Detector probs\n')
             test_detector(sess, probs_detector, Settings.x, X_test, Y_test,
-                        (X_test.shape[0], len(probs_ens_def_model_list)+1))
+                        (X_test.shape[0], len(probs_ens_def_model_list)+2))
         else:
             Settings.fp.write('Detector clean\n')
             test_detector(sess, detector, Settings.x, X_test, Y_test,
-                        (X_test.shape[0], len(Settings.attack_type)+1))
+                        (X_test.shape[0], len(Settings.attack_type)+2))
 
     # Evaluate the accuracy of model on adv examples
     for attack_name in Settings.eval_attack_type:
@@ -188,16 +203,16 @@ def defence_frame():
             if Settings.EVAL_DETECTOR:
                 if not Settings.REINFORE_ENS:
                     test_detector(sess, detector, Settings.x, Adv_X_test, Y_test,
-                                (Adv_X_test.shape[0], len(Settings.attack_type)+1))
+                                (Adv_X_test.shape[0], len(Settings.attack_type)+2))
                 else:
                     if from_model in (model, ensemble_model_L, ensemble_model_L_U, ensemble_model_L_U_alter):
                         Settings.fp.write('Detector logits\n')
                         test_detector(sess, logits_detector, Settings.x, Adv_X_test, Y_test,
-                                    (Adv_X_test.shape[0], len(logits_ens_def_model_list)+1))
+                                    (Adv_X_test.shape[0], len(logits_ens_def_model_list)+2))
                     if from_model in (model, ensemble_model_P, ensemble_model_P_U, ensemble_model_P_U_alter):
                         Settings.fp.write('Detector probs\n')
                         test_detector(sess, probs_detector, Settings.x, Adv_X_test, Y_test,
-                                    (Adv_X_test.shape[0], len(probs_ens_def_model_list)+1))
+                                    (Adv_X_test.shape[0], len(probs_ens_def_model_list)+2))
 
             # eval model accuracy
             for to_model in to_model_lst:
@@ -235,9 +250,9 @@ def defence_frame():
         else:
             attack_from_to(model, [model, ensemble_model_L, ensemble_model_P])
             # logits
-            attack_from_to(ensemble_model_L, [ensemble_model_L])
+            attack_from_to(ensemble_model_L, [ensemble_model_L, self_defence_model_logits])
             # probs
-            attack_from_to(ensemble_model_P, [ensemble_model_P])
+            attack_from_to(ensemble_model_P, [ensemble_model_P, self_defence_model_probs])
 
     Settings.fp.close()
 

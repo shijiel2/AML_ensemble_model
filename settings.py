@@ -37,23 +37,26 @@ class Settings:
     cifar10_model -> model for cifar10
     mnist_model -> model for mnist
     """
-    attack_type = ['fgsm', 'pgd', 'spsa'] 
+    attack_type = ['fgsm', 'pgd'] 
     eval_attack_type = ['fgsm', 'pgd', 'spsa']
     dataset = 'mnist' 
     attack_model = 'basic_model'
-    exp_name = 'full_spsa_20'
+    exp_name = 'pgd_as_spsa'
     
     # advanced settings 
-    REINFORE_ENS = ['fgsm', 'pgd', 'spsa'] 
+    REINFORE_ENS = [] 
     PRED_RANDOM = False
     RANDOM_K = 3
     RANDOM_STDDEV = 0.1
     IS_ONLINE = False
     LINEAR_DETECTOR = False
     EVAL_DETECTOR = True
-
+    BLACKBOX_SAMPLES_METHOD = 'pgd'
+    SEPRATED_DETECTOR_LOSS = False
 
     # static varibales 
+    def_list_addon = 1 if SEPRATED_DETECTOR_LOSS else 2
+    blackbox_samples = 'blackbox_attack_adv_samples_by_' + BLACKBOX_SAMPLES_METHOD + '.npy'
     exp_path = './exps/' + dataset + '_' + exp_name + '/' + attack_model
     saved_data_path = exp_path + '/train_data'
     Path(saved_data_path).mkdir(parents=True, exist_ok=True)
@@ -65,8 +68,7 @@ class Settings:
         config_args = dict(intra_op_parallelism_threads=1,
                                 allow_soft_placement=True, log_device_placement=False)
     else:
-        config_args = dict(allow_soft_placement=True,
-                                log_device_placement=False)
+        config_args = dict(allow_soft_placement=True, log_device_placement=False)
 
     train_params = {
         'nb_epochs': NB_EPOCHS,

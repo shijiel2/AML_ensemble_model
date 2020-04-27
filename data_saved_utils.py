@@ -14,7 +14,7 @@ from models.simple_Cifar10 import SimpleCifar10
 from cleverhans.attacks import *
 import datetime
 from sklearn.model_selection import train_test_split
-from cleverhans.loss import CrossEntropy
+from cleverhans.loss import CrossEntropy, CrossEntropy_detector
 from cleverhans.train import train
 from settings import Settings
 
@@ -71,7 +71,7 @@ def get_para(attack_type):
         if attack_type == 'fgsm':
             attack_params = attack_params
         elif attack_type == 'spsa':
-            attack_params.update({'nb_iter': 20})
+            attack_params.update({'nb_iter': 10})
         elif attack_type == 'bim':
             attack_params.update({'nb_iter': 50, 'eps_iter': .01})
         elif attack_type == 'pgd':
@@ -152,11 +152,19 @@ def do_preds(x, model, method, def_model_list=None, detector=None):
         preds = tf.stack([get_pred(x, m, method) for m in models], 1)
         return tf.reduce_mean(preds, 1)
     else:
-        weights = get_pred(x, detector, 'probs')
+        weights = detecotr_get_weights(x, detector)
         preds = tf.stack([get_pred(x, m, method) for m in models], 1)
         preds = tf.math.multiply(preds, weights[:, :, None])
         return tf.reduce_sum(preds, 1)
 
+def detecotr_get_weights(x, detector):
+    if Settings.SEPRATED_DETECTOR_LOSS:
+        logits = get_pred(x, detector, 'logits')
+        paddings = tf.constant([[0, 0,], [0, 1]])
+        logits = tf.pad(logits, paddings, "CONSTANT")  # add 0 to the end of logits
+        return tf.nn.softmax(logits)
+    else:
+        return get_pred(x, detector, 'probs')
 
 def get_pred(x, model, method):
     """
@@ -244,8 +252,6 @@ def get_merged_train_data(sess, def_model_list, X_train, Y_train):
     return X_merged, Y_merged
 
 
-
-
 def get_detector(name, width):
     """
     Fetch the corresponding detector.
@@ -280,7 +286,7 @@ def test_detector(sess, detector, x_in, X_test, Y_test, X_out_shape):
     :param X_test: ndarray stroing actual data
     :param X_out_shape: shape of output ndarray
     """
-    det_probs = get_pred(x_in, detector, 'probs')
+    det_probs = detecotr_get_weights(x_in, detector)
     Probs = do_sess_batched_eval(
         sess, det_probs, X_test, Y_test, X_out_shape, args=Settings.eval_params)
 
@@ -309,8 +315,24 @@ def train_detector(sess, detector, def_model_list, X_train, Y_train):
     print('Preparing merged data...')
     X_merged, Y_merged = get_merged_train_data(
         sess, def_model_list, X_train, Y_train)
+    
+    if Settings.SEPRATED_DETECTOR_LOSS:
+        loss_d = CrossEntropy_detector(detector, smoothing=Settings.LABEL_SMOOTHING, lam=0.001)
+    
+    else:
+        loss_d = CrossEntropy(detector, smoothing=Settings.LABEL_SMOOTHING)
 
-    loss_d = CrossEntropy(detector, smoothing=Settings.LABEL_SMOOTHING)
+        # make self defence model training data, append spsa training data to the end of the current merged data
+        X_blackbox = load_data(Settings.blackbox_samples)
+        Y_blackbox = np.zeros((X_blackbox.shape[0], len(def_model_list) + 2), dtype=Y_merged.dtype)
+        Y_blackbox[:,-1] = 1.
+
+        zeros = np.zeros((Y_merged.shape[0], 1), dtype=Y_merged.dtype)
+        Y_merged = np.append(Y_merged, zeros, axis=1)
+
+        X_merged = np.vstack((X_merged, X_blackbox))
+        Y_merged = np.vstack((Y_merged, Y_blackbox))
+
     print('Train detector with X_merged and Y_merged shape:',
           X_merged.shape, Y_merged.shape)
 
@@ -347,6 +369,22 @@ def train_defence_model(sess, model_i, from_model, attack_name, X_train, Y_train
           args=train_params, rng=Settings.rng, var_list=model_i.get_params())
 
 
+def train_defence_model_online(sess, model_i, from_model, attack_name, X_train, Y_train):
+    attack_method = get_attack(attack_name, from_model, sess)
+    attack_params = get_para(attack_name)
+    train_params = Settings.train_params
+    pass_y = False
+    if 'spsa' in attack_name:
+        train_params['batch_size'] = 1
+        pass_y = True
+
+    print('Trainnig model:', attack_name)
+    loss_i = CrossEntropy(
+        model_i, smoothing=Settings.LABEL_SMOOTHING, attack=attack_method, adv_coeff=1., attack_params=attack_params, pass_y=pass_y)
+    train(sess, loss_i, X_train, Y_train,
+          args=train_params, rng=Settings.rng, var_list=model_i.get_params())
+
+
 def reinfrocement_ensemble_gen(sess, name, from_model, def_model_list, attack_dict, X_train, Y_train):
     rein_def_model_list = def_model_list.copy()
 
@@ -362,7 +400,7 @@ def reinfrocement_ensemble_gen(sess, name, from_model, def_model_list, attack_di
         attack_dict[str(name + attack_name)] = get_attack_fun(from_model, attack_name, sess)
 
     rein_detector = get_detector(
-        'rein_detector_'+name, len(rein_def_model_list)+1)
+        'rein_detector_'+name, len(rein_def_model_list) + Settings.def_list_addon)
     train_detector(sess, rein_detector, rein_def_model_list, X_train, Y_train)
 
     return rein_def_model_list, rein_detector
