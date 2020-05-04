@@ -247,7 +247,7 @@ class CrossEntropy_detector(Loss):
                                                                  logits=logit_add_padding(logit)))
         for coeff, logit in safe_zip(coeffs, logits))
 
-    return loss1_alter - self.lam * loss2
+    return loss1 - self.lam * loss2
 
 
 class MixUp(Loss):

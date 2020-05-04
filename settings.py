@@ -41,7 +41,7 @@ class Settings:
     eval_attack_type = ['fgsm', 'pgd', 'spsa']
     dataset = 'mnist' 
     attack_model = 'basic_model'
-    exp_name = 'pgd_as_spsa'
+    exp_name = 'basic'
     
     # advanced settings 
     REINFORE_ENS = [] 
@@ -51,7 +51,7 @@ class Settings:
     IS_ONLINE = False
     LINEAR_DETECTOR = False
     EVAL_DETECTOR = True
-    BLACKBOX_SAMPLES_METHOD = 'pgd'
+    BLACKBOX_SAMPLES_METHOD = 'spsa'
     SEPRATED_DETECTOR_LOSS = False
 
     # static varibales 

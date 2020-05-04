@@ -71,7 +71,7 @@ def get_para(attack_type):
         if attack_type == 'fgsm':
             attack_params = attack_params
         elif attack_type == 'spsa':
-            attack_params.update({'nb_iter': 10})
+            attack_params.update({'nb_iter': 20})
         elif attack_type == 'bim':
             attack_params.update({'nb_iter': 50, 'eps_iter': .01})
         elif attack_type == 'pgd':
@@ -317,8 +317,7 @@ def train_detector(sess, detector, def_model_list, X_train, Y_train):
         sess, def_model_list, X_train, Y_train)
     
     if Settings.SEPRATED_DETECTOR_LOSS:
-        loss_d = CrossEntropy_detector(detector, smoothing=Settings.LABEL_SMOOTHING, lam=0.001)
-    
+        loss_d = CrossEntropy_detector(detector, smoothing=Settings.LABEL_SMOOTHING, lam=0.01)
     else:
         loss_d = CrossEntropy(detector, smoothing=Settings.LABEL_SMOOTHING)
 
@@ -329,7 +328,6 @@ def train_detector(sess, detector, def_model_list, X_train, Y_train):
 
         zeros = np.zeros((Y_merged.shape[0], 1), dtype=Y_merged.dtype)
         Y_merged = np.append(Y_merged, zeros, axis=1)
-
         X_merged = np.vstack((X_merged, X_blackbox))
         Y_merged = np.vstack((Y_merged, Y_blackbox))
 

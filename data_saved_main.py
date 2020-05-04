@@ -197,7 +197,11 @@ def defence_frame():
                           attack_name + ' ===============\n\n')
 
         def attack_from_to(from_model, to_model_lst):
-            Adv_X_test = make_adv_data(sess, from_model, attack_name, X_test, Y_test)
+            Adv_X_test_name = attack_name + '_attack_' + from_model.scope + '.npy'
+            Adv_X_test = load_data(Adv_X_test_name)
+            if load_data(Adv_X_test_name) is None:
+                Adv_X_test = make_adv_data(sess, from_model, attack_name, X_test, Y_test)
+                save_data(Adv_X_test, Adv_X_test_name)
 
             # test performance of detector
             if Settings.EVAL_DETECTOR:
