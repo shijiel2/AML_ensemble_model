@@ -171,6 +171,80 @@ class CrossEntropy(Loss):
     return loss
 
 
+class CrossEntropy_detector_simu(Loss):
+  """Cross-entropy loss for a multiclass softmax classifier.
+  :param model: Model instance, the model on which to apply the loss.
+  :param smoothing: float, amount of label smoothing for cross-entropy.
+  :param attack: function, given an input x, return an attacked x'.
+  :param pass_y: bool, if True pass y to the attack
+  :param adv_coeff: Coefficient to put on the cross-entropy for
+    adversarial examples, if adversarial examples are used.
+    The coefficient on the cross-entropy for clean examples is
+    1. - adv_coeff.
+  :param attack_params: dict, keyword arguments passed to `attack.generate`
+  """
+
+  def __init__(self, model, smoothing=0., attack_list=None, attack_params_list=None, attack=None, pass_y=False,
+               adv_coeff=0.5, attack_params=None, 
+               **kwargs):
+    if smoothing < 0 or smoothing > 1:
+      raise ValueError('Smoothing must be in [0, 1]', smoothing)
+    self.kwargs = kwargs
+    Loss.__init__(self, model, locals(), attack)
+    self.smoothing = smoothing
+    self.adv_coeff = adv_coeff
+    self.pass_y = pass_y
+    self.attack_params = attack_params
+    self.attack_list = attack_list
+    self.attack_params_list = attack_params_list
+
+  def fprop(self, x, y, **kwargs):
+    kwargs.update(self.kwargs)
+    if self.attack is not None:
+      attack_params = copy.copy(self.attack_params)
+      if attack_params is None:
+        attack_params = {}
+      if self.pass_y:
+        attack_params['y'] = y
+      x = x, self.attack.generate(x, **attack_params)
+      coeffs = [1. - self.adv_coeff, self.adv_coeff]
+      if self.adv_coeff == 1.:
+        x = (x[1],)
+        coeffs = (coeffs[1],)
+    else:
+      advx = []
+      for attack, param in zip(self.attack_list, self.attack_params_list):
+        advx.append(attack.generate(x, **param))
+      x = [x] + advx
+      x = tf.concat(x, axis=0)
+      x = tuple([x])
+      coeffs = [1.]
+
+      y_zero = tf.zeros((tf.shape(y)[0], 1))
+      y_one = tf.ones((tf.shape(y)[0], 1))
+      ys = []
+      n = len(self.attack_list) + 1
+      for i in range(n):
+        ys.append(tf.concat([y_zero] * i + [y_one] + [y_zero] * (n-1-i), axis=1))
+      y_new = tf.concat(ys, axis=0)
+
+    assert np.allclose(sum(coeffs), 1.)
+
+    # Catching RuntimeError: Variable -= value not supported by tf.eager.
+    try:
+      y_new -= self.smoothing * (y_new - 1. / tf.cast(y_new.shape[-1], y_new.dtype))
+    except RuntimeError:
+      y_new.assign_sub(self.smoothing * (y_new - 1. / tf.cast(y_new.shape[-1],
+                                                      y_new.dtype)))
+
+    logits = [self.model.get_logits(x, **kwargs) for x in x]
+    loss = sum(
+        coeff * tf.reduce_mean(softmax_cross_entropy_with_logits(labels=y_new,
+                                                                 logits=logit))
+        for coeff, logit in safe_zip(coeffs, logits))
+    return loss
+
+
 class CrossEntropy_detector(Loss):
   """Cross-entropy loss for a multiclass softmax classifier.
   :param model: Model instance, the model on which to apply the loss.

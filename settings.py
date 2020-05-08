@@ -5,8 +5,9 @@ import numpy as np
 from cleverhans.utils_mnist import data_mnist
 from cleverhans.dataset import CIFAR10
 
+
 class Settings:
-    
+
     # constants
     NB_EPOCHS = 6
     BATCH_SIZE = 128
@@ -37,14 +38,14 @@ class Settings:
     cifar10_model -> model for cifar10
     mnist_model -> model for mnist
     """
-    attack_type = ['fgsm', 'pgd'] 
+    attack_type = ['fgsm', 'pgd']
     eval_attack_type = ['fgsm', 'pgd', 'spsa']
-    dataset = 'mnist' 
+    dataset = 'mnist'
     attack_model = 'basic_model'
     exp_name = 'basic'
-    
-    # advanced settings 
-    REINFORE_ENS = [] 
+
+    # advanced settings
+    REINFORE_ENS = []
     PRED_RANDOM = False
     RANDOM_K = 3
     RANDOM_STDDEV = 0.1
@@ -52,23 +53,26 @@ class Settings:
     LINEAR_DETECTOR = False
     EVAL_DETECTOR = True
     BLACKBOX_SAMPLES_METHOD = 'spsa'
-    SEPRATED_DETECTOR_LOSS = False
+    # dummy_logit 0, additional_spsa 1, simu 2
+    DETECTOR_TRINING_MODE = 2
 
-    # static varibales 
-    def_list_addon = 1 if SEPRATED_DETECTOR_LOSS else 2
-    blackbox_samples = 'blackbox_attack_adv_samples_by_' + BLACKBOX_SAMPLES_METHOD + '.npy'
+    # static varibales
+    def_list_addon = 1 if DETECTOR_TRINING_MODE == 0 else 2
+    blackbox_samples = 'blackbox_attack_adv_samples_by_' + \
+        BLACKBOX_SAMPLES_METHOD + '.npy'
     exp_path = './exps/' + dataset + '_' + exp_name + '/' + attack_model
     saved_data_path = exp_path + '/train_data'
     Path(saved_data_path).mkdir(parents=True, exist_ok=True)
     fp = open(exp_path + '/' + str(IS_ONLINE) + '.txt', 'w')
 
     rng = np.random.RandomState([2017, 10, 30])
-    
+
     if NUM_THREADS:
         config_args = dict(intra_op_parallelism_threads=1,
-                                allow_soft_placement=True, log_device_placement=False)
+                           allow_soft_placement=True, log_device_placement=False)
     else:
-        config_args = dict(allow_soft_placement=True, log_device_placement=False)
+        config_args = dict(allow_soft_placement=True,
+                           log_device_placement=False)
 
     train_params = {
         'nb_epochs': NB_EPOCHS,
@@ -78,12 +82,12 @@ class Settings:
 
     eval_params = {'batch_size': 128}
 
-        # Set paramters for different dataset
+    # Set paramters for different dataset
     if dataset == 'mnist':
         X_train, Y_train, X_test, Y_test = data_mnist(train_start=0,
-                                                    train_end=TRAIN_SIZE,
-                                                    test_start=0,
-                                                    test_end=TEST_SIZE)
+                                                      train_end=TRAIN_SIZE,
+                                                      test_start=0,
+                                                      test_end=TEST_SIZE)
         assert Y_train.shape[1] == 10
 
         nb_classes = 10
@@ -93,7 +97,7 @@ class Settings:
 
     elif dataset == 'cifar10':
         data = CIFAR10(train_start=0, train_end=TRAIN_SIZE,
-                    test_start=0, test_end=TEST_SIZE)
+                       test_start=0, test_end=TEST_SIZE)
         X_train, Y_train = data.get_set('train')
         X_test, Y_test = data.get_set('test')
         assert Y_test.shape[1] == 10.

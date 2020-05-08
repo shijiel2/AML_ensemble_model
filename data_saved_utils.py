@@ -1,23 +1,25 @@
-import os
-import tensorflow as tf
-from cleverhans.utils_tf import model_eval
-from cleverhans.utils import batch_indices, _ArgsWrapper, create_logger
-import numpy as np
+import datetime
 import math
+import os
+
+import numpy as np
+import tensorflow as tf
+from sklearn.model_selection import train_test_split
 from tqdm import tqdm
+
+from cleverhans.attacks import *
+from cleverhans.loss import (CrossEntropy, CrossEntropy_detector,
+                             CrossEntropy_detector_simu)
+from cleverhans.train import train, train_simu
+from cleverhans.utils import _ArgsWrapper, batch_indices, create_logger
+from cleverhans.utils_tf import model_eval
 from models.all_cnn import ModelAllConvolutional
 from models.basic_model import ModelBasicCNN
 from models.cifar10_model import make_wresnet
 from models.mnist_model import MadryMNIST
-from models.simple_model import SimpleLinear
 from models.simple_Cifar10 import SimpleCifar10
-from cleverhans.attacks import *
-import datetime
-from sklearn.model_selection import train_test_split
-from cleverhans.loss import CrossEntropy, CrossEntropy_detector
-from cleverhans.train import train
+from models.simple_model import SimpleLinear
 from settings import Settings
-
 
 
 """
@@ -157,14 +159,17 @@ def do_preds(x, model, method, def_model_list=None, detector=None):
         preds = tf.math.multiply(preds, weights[:, :, None])
         return tf.reduce_sum(preds, 1)
 
+
 def detecotr_get_weights(x, detector):
-    if Settings.SEPRATED_DETECTOR_LOSS:
+    if Settings.DETECTOR_TRINING_MODE == 0:
         logits = get_pred(x, detector, 'logits')
-        paddings = tf.constant([[0, 0,], [0, 1]])
-        logits = tf.pad(logits, paddings, "CONSTANT")  # add 0 to the end of logits
+        paddings = tf.constant([[0, 0, ], [0, 1]])
+        # add 0 to the end of logits
+        logits = tf.pad(logits, paddings, "CONSTANT")
         return tf.nn.softmax(logits)
     else:
         return get_pred(x, detector, 'probs')
+
 
 def get_pred(x, model, method):
     """
@@ -302,7 +307,7 @@ def test_detector(sess, detector, x_in, X_test, Y_test, X_out_shape):
     print('detector preds counts:' + str(dict(zip(unique, counts))))
 
 
-def train_detector(sess, detector, def_model_list, X_train, Y_train):
+def train_detector(sess, detector, def_model_list, X_train, Y_train, simu_args=None):
     """
     Train a detector and return it.
     :param sess: current session
@@ -310,32 +315,50 @@ def train_detector(sess, detector, def_model_list, X_train, Y_train):
     :param detector: the detector
     :param X_train: ndarray 
     """
-    # Make and train detector that classfies whcih source (clean or adv_1 or adv_2...)
-    # prepare data
-    print('Preparing merged data...')
-    X_merged, Y_merged = get_merged_train_data(
-        sess, def_model_list, X_train, Y_train)
-    
-    if Settings.SEPRATED_DETECTOR_LOSS:
-        loss_d = CrossEntropy_detector(detector, smoothing=Settings.LABEL_SMOOTHING, lam=0.01)
-    else:
+    if Settings.DETECTOR_TRINING_MODE == 0:
+        print('Preparing merged data...')
+        X_merged, Y_merged = get_merged_train_data(
+            sess, def_model_list, X_train, Y_train)
+        loss_d = CrossEntropy_detector(
+            detector, smoothing=Settings.LABEL_SMOOTHING, lam=0.01)
+
+        train(sess, loss_d, X_merged, Y_merged,
+              args=Settings.train_params, rng=Settings.rng, var_list=detector.get_params())
+
+    elif Settings.DETECTOR_TRINING_MODE == 1:
+        print('Preparing merged data...')
+        X_merged, Y_merged = get_merged_train_data(
+            sess, def_model_list, X_train, Y_train)
         loss_d = CrossEntropy(detector, smoothing=Settings.LABEL_SMOOTHING)
 
         # make self defence model training data, append spsa training data to the end of the current merged data
         X_blackbox = load_data(Settings.blackbox_samples)
-        Y_blackbox = np.zeros((X_blackbox.shape[0], len(def_model_list) + 2), dtype=Y_merged.dtype)
-        Y_blackbox[:,-1] = 1.
+        Y_blackbox = np.zeros((X_blackbox.shape[0], len(
+            def_model_list) + 2), dtype=Y_merged.dtype)
+        Y_blackbox[:, -1] = 1.
 
         zeros = np.zeros((Y_merged.shape[0], 1), dtype=Y_merged.dtype)
         Y_merged = np.append(Y_merged, zeros, axis=1)
         X_merged = np.vstack((X_merged, X_blackbox))
         Y_merged = np.vstack((Y_merged, Y_blackbox))
 
-    print('Train detector with X_merged and Y_merged shape:',
-          X_merged.shape, Y_merged.shape)
+        train(sess, loss_d, X_merged, Y_merged,
+              args=Settings.train_params, rng=Settings.rng, var_list=detector.get_params())
 
-    train(sess, loss_d, X_merged, Y_merged,
-          args=Settings.train_params, rng=Settings.rng, var_list=detector.get_params())
+    elif Settings.DETECTOR_TRINING_MODE == 2:
+        attack_method = get_attack(
+            'pgd', simu_args['ensemble_model'], sess)
+        attack_params = get_para('pgd')
+        loss_sdm = CrossEntropy(
+            simu_args['self_defence_model'], smoothing=Settings.LABEL_SMOOTHING, attack=attack_method, adv_coeff=1., attack_params=attack_params)
+
+        attack_list = [get_attack(name, simu_args['model0'], sess) for name in Settings.attack_type] + [get_attack('pgd', simu_args['ensemble_model'], sess)]
+        attack_params_list = [get_para(name) for name in Settings.attack_type] + [get_para('pgd')]
+        
+        loss_d = CrossEntropy_detector_simu(detector, smoothing=Settings.LABEL_SMOOTHING, attack_list=attack_list, attack_params_list=attack_params_list)
+
+        train_simu(sess, loss_sdm, loss_d, X_train, Y_train,
+              args=Settings.train_params, rng=Settings.rng, var_list1=simu_args['self_defence_model'].get_params(), var_list2=detector.get_params())
 
     return detector
 
@@ -356,9 +379,10 @@ def train_defence_model(sess, model_i, from_model, attack_name, X_train, Y_train
     Adv_X_train_name = model_i.scope + '_X_train.npy'
     Adv_X_train = load_data(Adv_X_train_name)
     if Adv_X_train is None:
-        Adv_X_train = make_adv_data(sess, from_model, attack_name, X_train, Y_train)
+        Adv_X_train = make_adv_data(
+            sess, from_model, attack_name, X_train, Y_train)
         save_data(Adv_X_train, Adv_X_train_name)
-    
+
     print('Trainning model:', model_i.scope)
     train_params = Settings.train_params
     loss_i = CrossEntropy(
@@ -388,14 +412,16 @@ def reinfrocement_ensemble_gen(sess, name, from_model, def_model_list, attack_di
 
     for attack_name in Settings.REINFORE_ENS:
 
-        model_i_scope = name + '_UwModels_model_0_' + '_'.join([m.scope for m in def_model_list]) + '_Att_' + attack_name
-        
+        model_i_scope = name + '_UwModels_model_0_' + \
+            '_'.join([m.scope for m in def_model_list]) + '_Att_' + attack_name
+
         model_i = get_model(model_i_scope)
         train_defence_model(sess, model_i, from_model,
                             attack_name, X_train, Y_train)
 
         rein_def_model_list.append(model_i)
-        attack_dict[str(name + attack_name)] = get_attack_fun(from_model, attack_name, sess)
+        attack_dict[str(name + attack_name)
+                    ] = get_attack_fun(from_model, attack_name, sess)
 
     rein_detector = get_detector(
         'rein_detector_'+name, len(rein_def_model_list) + Settings.def_list_addon)
@@ -407,12 +433,14 @@ def reinfrocement_ensemble_gen(sess, name, from_model, def_model_list, attack_di
 def save_data(data, name):
     np.save(os.path.join(Settings.saved_data_path, name), data)
 
+
 def load_data(name):
     path = os.path.join(Settings.saved_data_path, name)
     if os.path.exists(path):
         return np.load(path)
     else:
         return None
+
 
 def make_adv_data(sess, from_model, attack_name, X_in, Y_in):
     print('make adv data: ', attack_name, from_model.scope)
