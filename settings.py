@@ -1,9 +1,11 @@
 import os
 from pathlib import Path
-import tensorflow as tf
+
 import numpy as np
-from cleverhans.utils_mnist import data_mnist
+import tensorflow as tf
+
 from cleverhans.dataset import CIFAR10
+from cleverhans.utils_mnist import data_mnist
 
 
 class Settings:
@@ -11,7 +13,7 @@ class Settings:
     # constants
     NB_EPOCHS = 6
     BATCH_SIZE = 128
-    LEARNING_RATE = 0.001
+    LEARNING_RATE = 0.0001
     NB_FILTERS = 64
     TRAIN_SIZE = 60000
     TEST_SIZE = 10000
@@ -40,8 +42,8 @@ class Settings:
     """
     attack_type = ['fgsm', 'pgd']
     eval_attack_type = ['fgsm', 'pgd', 'spsa']
-    dataset = 'mnist'
-    attack_model = 'basic_model'
+    dataset = 'cifar10'
+    attack_model = 'all_cnn'
     exp_name = 'basic'
 
     # advanced settings

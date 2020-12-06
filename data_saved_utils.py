@@ -73,7 +73,7 @@ def get_para(attack_type):
         if attack_type == 'fgsm':
             attack_params = attack_params
         elif attack_type == 'spsa':
-            attack_params.update({'nb_iter': 20})
+            attack_params.update({'nb_iter': 5})
         elif attack_type == 'bim':
             attack_params.update({'nb_iter': 50, 'eps_iter': .01})
         elif attack_type == 'pgd':
@@ -352,13 +352,20 @@ def train_detector(sess, detector, def_model_list, X_train, Y_train, simu_args=N
         loss_sdm = CrossEntropy(
             simu_args['self_defence_model'], smoothing=Settings.LABEL_SMOOTHING, attack=attack_method, adv_coeff=1., attack_params=attack_params)
 
-        attack_list = [get_attack(name, simu_args['model0'], sess) for name in Settings.attack_type] + [get_attack('pgd', simu_args['ensemble_model'], sess)]
-        attack_params_list = [get_para(name) for name in Settings.attack_type] + [get_para('pgd')]
-        
-        loss_d = CrossEntropy_detector_simu(detector, smoothing=Settings.LABEL_SMOOTHING, attack_list=attack_list, attack_params_list=attack_params_list)
+        attack_list = [get_attack(name, simu_args['model0'], sess) for name in Settings.attack_type] + [
+            get_attack('pgd', simu_args['ensemble_model'], sess)]
+        attack_params_list = [
+            get_para(name) for name in Settings.attack_type] + [get_para('pgd')]
 
-        train_simu(sess, loss_sdm, loss_d, X_train, Y_train,
-              args=Settings.train_params, rng=Settings.rng, var_list1=simu_args['self_defence_model'].get_params(), var_list2=detector.get_params())
+        loss_d = CrossEntropy_detector_simu(
+            detector, smoothing=Settings.LABEL_SMOOTHING, attack_list=attack_list, attack_params_list=attack_params_list)
+
+        train_simu(sess, loss_sdm, loss_d, X_train, Y_train, args={
+            'nb_epochs': 6,
+            'batch_size': 128,
+            'learning_rate': 0.001
+        }, rng=Settings.rng,
+            var_list1=simu_args['self_defence_model'].get_params(), var_list2=detector.get_params())
 
     return detector
 

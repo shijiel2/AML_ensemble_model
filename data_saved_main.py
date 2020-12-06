@@ -233,11 +233,8 @@ def defence_frame():
 
         def attack_from_to(from_model, to_model_lst):
             Adv_X_test_name = attack_name + '_attack_' + from_model.scope + '.npy'
-            Adv_X_test = load_data(Adv_X_test_name)
-            if load_data(Adv_X_test_name) is None:
-                Adv_X_test = make_adv_data(
-                    sess, from_model, attack_name, X_test, Y_test)
-                save_data(Adv_X_test, Adv_X_test_name)
+            Adv_X_test = make_adv_data(sess, from_model, attack_name, X_test, Y_test)
+            save_data(Adv_X_test, Adv_X_test_name)
 
             # test performance of detector
             if Settings.EVAL_DETECTOR:
@@ -292,7 +289,7 @@ def defence_frame():
                 attack_from_to(ensemble_model_P_U_alter, [ensemble_model_P])
 
         # black box attacks
-        else:
+        elif attack_name in ['spsa', 'pgd']:
             attack_from_to(model, [model, ensemble_model_L, ensemble_model_P])
             # logits
             attack_from_to(ensemble_model_L, [
