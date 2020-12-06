@@ -1,0 +1,10 @@
+name: aml_ensemble
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - tensorflow-gpu=1.15.0
+  - scikit-learn
+  - autopep8
+  - pylint
+prefix: E:\Applications\Anaconda3\envs\tf_gpu
