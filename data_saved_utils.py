@@ -103,6 +103,8 @@ def get_para(attack_type):
             attack_params.update({'eps': 8, 'ord': np.inf})
             if attack_type == 'fgsm':
                 attack_params = attack_params
+            elif attack_type == 'spsa':
+                attack_params.update({'nb_iter': 5})
             elif attack_type == 'bim':
                 attack_params.update({'nb_iter': 50, 'eps_iter': .01})
             elif attack_type == 'pgd':
@@ -352,18 +354,20 @@ def train_detector(sess, detector, def_model_list, X_train, Y_train, simu_args=N
         loss_sdm = CrossEntropy(
             simu_args['self_defence_model'], smoothing=Settings.LABEL_SMOOTHING, attack=attack_method, adv_coeff=1., attack_params=attack_params)
 
-        attack_list = [get_attack(name, simu_args['model0'], sess) for name in Settings.attack_type] + [
-            get_attack('pgd', simu_args['ensemble_model'], sess)]
-        attack_params_list = [
-            get_para(name) for name in Settings.attack_type] + [get_para('pgd')]
+        # attack_list = [get_attack(name, simu_args['model0'], sess) for name in Settings.attack_type] + [
+        #     get_attack('pgd', simu_args['ensemble_model'], sess)]
+        # attack_params_list = [
+        #     get_para(name) for name in Settings.attack_type] + [get_para('pgd')]
+
+        attack_fun_list = [get_attack_fun(simu_args['model0'], name, sess) for name in Settings.attack_type] + [get_attack_fun(simu_args['ensemble_model'], 'pgd', sess)]
 
         loss_d = CrossEntropy_detector_simu(
-            detector, smoothing=Settings.LABEL_SMOOTHING, attack_list=attack_list, attack_params_list=attack_params_list)
+            detector, smoothing=Settings.LABEL_SMOOTHING, attack_fun_list=attack_fun_list)
 
         train_simu(sess, loss_sdm, loss_d, X_train, Y_train, args={
             'nb_epochs': 6,
-            'batch_size': 128,
-            'learning_rate': 0.001
+            'batch_size': 1,
+            'learning_rate': 0.0001
         }, rng=Settings.rng,
             var_list1=simu_args['self_defence_model'].get_params(), var_list2=detector.get_params())
 
@@ -374,9 +378,12 @@ def get_attack_fun(from_model, attack_name, sess):
     attack_params = get_para(attack_name)
     attack_method = get_attack(attack_name, from_model, sess)
 
-    def attack(x):
+    def attack(x, pass_y=None):
         if 'spsa' in attack_name:
-            return attack_method.generate(x, y=Settings.y, **attack_params)
+            if pass_y is None:
+                return attack_method.generate(x, y=Settings.y, **attack_params)
+            else:
+                return attack_method.generate(x, y=pass_y, **attack_params)
         else:
             return attack_method.generate(x, **attack_params)
     return attack

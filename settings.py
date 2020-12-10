@@ -13,7 +13,7 @@ class Settings:
     # constants
     NB_EPOCHS = 6
     BATCH_SIZE = 128
-    LEARNING_RATE = 0.0001
+    LEARNING_RATE = 0.001
     NB_FILTERS = 64
     TRAIN_SIZE = 60000
     TEST_SIZE = 10000

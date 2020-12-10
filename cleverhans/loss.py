@@ -184,7 +184,7 @@ class CrossEntropy_detector_simu(Loss):
   :param attack_params: dict, keyword arguments passed to `attack.generate`
   """
 
-  def __init__(self, model, smoothing=0., attack_list=None, attack_params_list=None, attack=None, pass_y=False,
+  def __init__(self, model, smoothing=0., attack_fun_list=None, attack=None, pass_y=False,
                adv_coeff=0.5, attack_params=None, 
                **kwargs):
     if smoothing < 0 or smoothing > 1:
@@ -195,8 +195,7 @@ class CrossEntropy_detector_simu(Loss):
     self.adv_coeff = adv_coeff
     self.pass_y = pass_y
     self.attack_params = attack_params
-    self.attack_list = attack_list
-    self.attack_params_list = attack_params_list
+    self.attack_fun_list = attack_fun_list
 
   def fprop(self, x, y, **kwargs):
     kwargs.update(self.kwargs)
@@ -213,8 +212,8 @@ class CrossEntropy_detector_simu(Loss):
         coeffs = (coeffs[1],)
     else:
       advx = []
-      for attack, param in zip(self.attack_list, self.attack_params_list):
-        advx.append(attack.generate(x, **param))
+      for attack_fun in self.attack_fun_list:
+        advx.append(attack_fun(x, pass_y=y))
       x = [x] + advx
       x = tf.concat(x, axis=0)
       x = tuple([x])
@@ -223,7 +222,7 @@ class CrossEntropy_detector_simu(Loss):
       y_zero = tf.zeros((tf.shape(y)[0], 1))
       y_one = tf.ones((tf.shape(y)[0], 1))
       ys = []
-      n = len(self.attack_list) + 1
+      n = len(self.attack_fun_list) + 1
       for i in range(n):
         ys.append(tf.concat([y_zero] * i + [y_one] + [y_zero] * (n-1-i), axis=1))
       y_new = tf.concat(ys, axis=0)
